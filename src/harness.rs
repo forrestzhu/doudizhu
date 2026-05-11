@@ -75,6 +75,25 @@ pub struct SeededRunReport {
     pub reports: Vec<SeededGameReport>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct DealPlayerReport {
+    pub id: usize,
+    pub role: String,
+    pub relationship: String,
+    pub hand_count: usize,
+    pub visible_hand: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DealReport {
+    pub schema_version: String,
+    pub deterministic: bool,
+    pub seed: u64,
+    pub viewer: usize,
+    pub bottom_cards: Vec<String>,
+    pub players: Vec<DealPlayerReport>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind")]
 enum Scenario {
@@ -219,6 +238,48 @@ pub fn run_seeded_games(
         wins,
         avg_turns: total_turns as f64 / games as f64,
         reports,
+    })
+}
+
+pub fn run_deal(seed: u64, viewer: usize) -> Result<DealReport, HarnessError> {
+    let deal = Deal::from_seed(seed, 3);
+    let bottom_cards = card_strings(&deal.bottom_cards);
+    let game = Game::new(deal, GameConfig::default())?;
+    if viewer >= 3 {
+        return Err(HarnessError::InvalidScenario(format!(
+            "viewer {viewer} is outside the 3-player game"
+        )));
+    }
+
+    let view = game.player_view(PlayerId(viewer));
+    let players = view
+        .hand_counts
+        .iter()
+        .enumerate()
+        .map(|(id, hand_count)| DealPlayerReport {
+            id,
+            role: if id == 0 {
+                "Landlord".to_string()
+            } else {
+                "Peasant".to_string()
+            },
+            relationship: format!("{:?}", view.relationships[id]),
+            hand_count: *hand_count,
+            visible_hand: if id == viewer {
+                card_strings(&view.hand)
+            } else {
+                Vec::new()
+            },
+        })
+        .collect();
+
+    Ok(DealReport {
+        schema_version: "2026-05-11".to_string(),
+        deterministic: true,
+        seed,
+        viewer,
+        bottom_cards,
+        players,
     })
 }
 
@@ -446,7 +507,7 @@ fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use crate::cards::{Card, Rank, Suit};
-    use crate::harness::{run_scenario_str, HarnessError};
+    use crate::harness::{run_deal, run_scenario_str, HarnessError};
     use std::str::FromStr;
 
     #[test]
@@ -532,5 +593,38 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, HarnessError::InvalidCard(_)));
+    }
+
+    #[test]
+    fn deal_report_exposes_only_viewer_hand() {
+        let report = run_deal(42, 0).unwrap();
+
+        assert_eq!(report.seed, 42);
+        assert_eq!(report.viewer, 0);
+        assert_eq!(report.bottom_cards.len(), 3);
+        assert_eq!(report.players[0].role, "Landlord");
+        assert_eq!(report.players[1].role, "Peasant");
+        assert_eq!(report.players[2].role, "Peasant");
+        assert_eq!(
+            report
+                .players
+                .iter()
+                .map(|player| player.hand_count)
+                .collect::<Vec<_>>(),
+            [20, 17, 17]
+        );
+        assert_eq!(report.players[0].visible_hand.len(), 20);
+        for bottom_card in &report.bottom_cards {
+            assert!(report.players[0].visible_hand.contains(bottom_card));
+        }
+        assert!(report.players[1].visible_hand.is_empty());
+        assert!(report.players[2].visible_hand.is_empty());
+    }
+
+    #[test]
+    fn deal_report_rejects_invalid_viewer() {
+        let error = run_deal(42, 3).unwrap_err();
+
+        assert!(matches!(error, HarnessError::InvalidScenario(_)));
     }
 }

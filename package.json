@@ -1,0 +1,16 @@
+{
+  "name": "doudizhu-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron desktop shell for the Doudizhu Rust core.",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "check:ui": "node --check electron/main.js && node --check electron/preload.js && node --check renderer/app.js",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "electron": "^42.0.1"
+  }
+}

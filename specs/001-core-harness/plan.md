@@ -11,10 +11,11 @@ deterministic self-play through a CLI harness.
 ## Technical Context
 
 **Language/Version**: Rust 1.93  
-**Primary Dependencies**: Rust standard library only for the first harness slice  
+**Primary Dependencies**: Rust standard library for core logic; `serde` and
+`serde_json` for scenario fixtures and machine-readable harness reports  
 **Storage**: In-memory state  
 **Testing**: `cargo test`; seeded CLI harness runs  
-**Target Type**: Library plus CLI binary; future Tauri adapter  
+**Target Type**: Library plus CLI binary; future Electron adapter  
 **Constraints**: No UI dependency in core, deterministic seeds, no opponent-hand
 leaks in default visibility  
 **Scope**: Initial reduced rules: single, pair, triple, bomb, rocket
@@ -80,5 +81,5 @@ cargo run --bin harness -- --scenario evals/scenarios/bomb_beats_pair.json --for
 - Add complete Dou Dizhu hand recognition.
 - Add explicit landlord bidding and bottom-card visibility.
 - Add scripted scenario files for regression decks.
-- Add Tauri commands over the core engine.
+- Add Electron main/preload bridge over the core engine.
 - Add JSON contract for out-of-process LLM decision policies.

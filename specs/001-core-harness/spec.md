@@ -3,7 +3,7 @@
 **Feature Branch**: `001-core-harness`  
 **Created**: 2026-05-11  
 **Status**: Draft  
-**Input**: User wants a Dou Dizhu system architecture, Spec Kit workflow, a deterministic harness, pluggable player decision systems, rules, dealing, visibility, and future Tauri UI support.
+**Input**: User wants a Dou Dizhu system architecture, Spec Kit workflow, a deterministic harness, pluggable player decision systems, rules, dealing, visibility, and future Electron UI support.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -12,7 +12,7 @@
 As a developer, I can run a harness with fixed seeds so that rule, visibility, and
 decision changes can be tested without a UI.
 
-**Why this priority**: It gives the project a real verification loop before Tauri
+**Why this priority**: It gives the project a real verification loop before Electron
 or advanced AI players exist.
 
 **Independent Test**: Run the CLI harness with a fixed seed and assert that a game
@@ -101,5 +101,5 @@ decision interface and verify the engine validates their outputs.
 
 - Initial implementation uses a reduced rule set to prove the architecture and harness.
 - Full Dou Dizhu rule coverage will be added incrementally behind the same rule interface.
-- Tauri integration is out of scope for the first harness slice.
+- Electron integration is out of scope for the first harness slice.
 - Landlord bidding is not modeled yet; player 0 is treated as landlord and receives the bottom cards.

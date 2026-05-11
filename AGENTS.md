@@ -7,7 +7,7 @@ Use it for project structure, shell commands, and verification expectations.
 
 - Treat the Rust core as the source of truth for rules, state transitions,
   visibility, and player decision contracts.
-- Keep Tauri as an adapter over the core library.
+- Keep Electron as an adapter over the core library.
 - Do not implement hidden-information leaks in player-facing views.
 - Add or update deterministic harness coverage for behavior changes.
 - Prefer Spec Kit artifacts under `specs/` for non-trivial features.

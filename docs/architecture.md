@@ -2,9 +2,9 @@
 
 ## Goal
 
-Build the game as a testable core engine first, then attach Tauri as one possible
-player interface. The core must support deterministic harness runs and pluggable
-decision systems before the UI exists.
+Build the game as a testable core engine first, then attach Electron as the
+desktop player interface. The core must support deterministic harness runs and
+pluggable decision systems before the UI exists.
 
 ## Layers
 
@@ -16,7 +16,9 @@ decision systems before the UI exists.
    - deterministic self-play harness
 
 2. `adapters`
-   - Tauri commands translate UI events into core actions.
+   - Electron main/preload code translates UI events into core actions.
+   - Renderer views must request player-specific projections instead of full
+     hidden game state.
    - CLI harness runs seeded simulations and regression scenarios.
    - Future LLM/search adapters implement the same decision trait.
 
@@ -65,7 +67,7 @@ three bottom cards to player 0's hand. The bottom cards are still retained on th
 
 ## Harness Strategy
 
-The harness must answer two questions after every development slice:
+The harness must answer these questions after every development slice:
 
 - Can the engine execute a deterministic game without hidden UI state?
 - Can tests assert specific rule, visibility, and decision-contract behavior?

@@ -176,11 +176,7 @@ impl Game {
                 Ok(())
             }
             Decision::Play(cards) => {
-                for card in &cards {
-                    if !self.hands[player.0].contains(card) {
-                        return Err(GameError::MissingCard(player, *card));
-                    }
-                }
+                ensure_cards_available(&self.hands[player.0], &cards, player)?;
                 let Some(classified) = self.rules.classify(&cards) else {
                     return Err(GameError::IllegalHand(player));
                 };
@@ -239,6 +235,21 @@ fn remove_cards(hand: &mut Vec<Card>, cards: &[Card]) {
     }
 }
 
+fn ensure_cards_available(
+    hand: &[Card],
+    requested: &[Card],
+    player: PlayerId,
+) -> Result<(), GameError> {
+    let mut remaining = hand.to_vec();
+    for card in requested {
+        let Some(index) = remaining.iter().position(|candidate| candidate == card) else {
+            return Err(GameError::MissingCard(player, *card));
+        };
+        remaining.remove(index);
+    }
+    Ok(())
+}
+
 fn shuffle(deck: &mut [Card], seed: u64) {
     let mut state = seed;
     for i in (1..deck.len()).rev() {
@@ -254,10 +265,52 @@ fn shuffle(deck: &mut [Card], seed: u64) {
 mod tests {
     use super::*;
     use crate::cards::{Rank, Suit};
-    use crate::decision::LowestLegalPolicy;
+    use crate::decision::{Decision, LowestLegalPolicy};
+    use crate::rules::RuleSet;
+    use crate::visibility::PlayerView;
 
     fn card(rank: Rank, suit: Suit) -> Card {
         Card::suited(rank, suit)
+    }
+
+    struct FixedDecisionPolicy {
+        decision: Decision,
+    }
+
+    impl DecisionPolicy for FixedDecisionPolicy {
+        fn decide(&mut self, _view: &PlayerView, _rules: &dyn RuleSet) -> Decision {
+            self.decision.clone()
+        }
+    }
+
+    fn fixed_policies(first_decision: Decision) -> Vec<Box<dyn DecisionPolicy>> {
+        vec![
+            Box::new(FixedDecisionPolicy {
+                decision: first_decision,
+            }),
+            Box::<LowestLegalPolicy>::default(),
+            Box::<LowestLegalPolicy>::default(),
+        ]
+    }
+
+    fn fixed_policy(decision: Decision) -> Box<dyn DecisionPolicy> {
+        Box::new(FixedDecisionPolicy { decision })
+    }
+
+    fn small_game() -> Game {
+        let deal = Deal::from_deck(
+            vec![
+                card(Rank::Three, Suit::Clubs),
+                card(Rank::Four, Suit::Clubs),
+                card(Rank::Five, Suit::Clubs),
+                card(Rank::Six, Suit::Clubs),
+                card(Rank::Seven, Suit::Clubs),
+                card(Rank::Eight, Suit::Clubs),
+            ],
+            3,
+            0,
+        );
+        Game::new(deal, GameConfig::default()).unwrap()
     }
 
     #[test]
@@ -320,5 +373,102 @@ mod tests {
         assert!(outcome.turns <= GameConfig::default().max_turns);
         assert!(outcome.winner.0 < 3);
         assert!(!game.history().is_empty());
+    }
+
+    #[test]
+    fn legal_policy_play_records_history_and_winner() {
+        let deal = Deal {
+            hands: vec![
+                vec![card(Rank::Three, Suit::Clubs)],
+                vec![card(Rank::Four, Suit::Clubs)],
+                vec![card(Rank::Five, Suit::Clubs)],
+            ],
+            bottom_cards: Vec::new(),
+        };
+        let mut game = Game::new(deal, GameConfig::default()).unwrap();
+        let mut policies = vec![
+            fixed_policy(Decision::Play(vec![card(Rank::Three, Suit::Clubs)])),
+            Box::<LowestLegalPolicy>::default(),
+            Box::<LowestLegalPolicy>::default(),
+        ];
+
+        let outcome = game.run(&mut policies).unwrap();
+
+        assert_eq!(
+            outcome,
+            GameOutcome {
+                winner: PlayerId(0),
+                turns: 1
+            }
+        );
+        assert_eq!(game.history().len(), 1);
+        assert_eq!(game.history()[0].player, PlayerId(0));
+        assert!(game.history()[0].accepted_hand.is_some());
+        assert_eq!(game.player_view(PlayerId(0)).hand_counts[0], 0);
+    }
+
+    #[test]
+    fn leading_player_cannot_pass() {
+        let mut game = small_game();
+        let mut policies = fixed_policies(Decision::Pass);
+
+        let error = game.run(&mut policies).unwrap_err();
+
+        assert_eq!(error, GameError::IllegalPass(PlayerId(0)));
+        assert!(game.history().is_empty());
+    }
+
+    #[test]
+    fn policy_cannot_play_card_not_in_hand() {
+        let mut game = small_game();
+        let missing = card(Rank::Ace, Suit::Spades);
+        let mut policies = fixed_policies(Decision::Play(vec![missing]));
+
+        let error = game.run(&mut policies).unwrap_err();
+
+        assert_eq!(error, GameError::MissingCard(PlayerId(0), missing));
+        assert!(game.history().is_empty());
+    }
+
+    #[test]
+    fn policy_cannot_reuse_the_same_physical_card() {
+        let mut game = small_game();
+        let owned = card(Rank::Three, Suit::Clubs);
+        let mut policies = fixed_policies(Decision::Play(vec![owned, owned]));
+
+        let error = game.run(&mut policies).unwrap_err();
+
+        assert_eq!(error, GameError::MissingCard(PlayerId(0), owned));
+        assert!(game.history().is_empty());
+    }
+
+    #[test]
+    fn policy_cannot_play_unclassified_hand() {
+        let mut game = small_game();
+        let mut policies = fixed_policies(Decision::Play(vec![
+            card(Rank::Three, Suit::Clubs),
+            card(Rank::Six, Suit::Clubs),
+        ]));
+
+        let error = game.run(&mut policies).unwrap_err();
+
+        assert_eq!(error, GameError::IllegalHand(PlayerId(0)));
+        assert!(game.history().is_empty());
+    }
+
+    #[test]
+    fn policy_cannot_play_lower_same_kind_over_previous_play() {
+        let mut game = small_game();
+        let mut policies = vec![
+            fixed_policy(Decision::Play(vec![card(Rank::Six, Suit::Clubs)])),
+            fixed_policy(Decision::Play(vec![card(Rank::Four, Suit::Clubs)])),
+            Box::<LowestLegalPolicy>::default(),
+        ];
+
+        let error = game.run(&mut policies).unwrap_err();
+
+        assert_eq!(error, GameError::IllegalHand(PlayerId(1)));
+        assert_eq!(game.history().len(), 1);
+        assert_eq!(game.history()[0].player, PlayerId(0));
     }
 }

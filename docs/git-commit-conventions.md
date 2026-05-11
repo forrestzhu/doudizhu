@@ -37,7 +37,7 @@ Use a short area name when it adds clarity:
 - `visibility`: player view and hidden-information boundaries
 - `decision`: player policy contracts or bots
 - `harness`: CLI simulations and regression scenarios
-- `tauri`: desktop UI adapter
+- `electron`: desktop UI adapter
 - `spec`: Spec Kit artifacts under `specs/`
 - `docs`: architecture/design documents
 

@@ -141,4 +141,39 @@ mod tests {
         assert!(!rules.can_play_over(&low_single, Some(&high_single)));
         assert!(rules.can_play_over(&bomb, Some(&high_single)));
     }
+
+    #[test]
+    fn rocket_beats_everything_and_cannot_be_beaten() {
+        let rules = BasicRules;
+        let rocket = rules
+            .classify(&[Card::joker(Rank::BlackJoker), Card::joker(Rank::RedJoker)])
+            .unwrap();
+        let bomb = rules
+            .classify(&[
+                card(Rank::Four, Suit::Clubs),
+                card(Rank::Four, Suit::Diamonds),
+                card(Rank::Four, Suit::Hearts),
+                card(Rank::Four, Suit::Spades),
+            ])
+            .unwrap();
+
+        assert!(rules.can_play_over(&rocket, Some(&bomb)));
+        assert!(!rules.can_play_over(&bomb, Some(&rocket)));
+        assert!(!rules.can_play_over(&rocket, Some(&rocket)));
+    }
+
+    #[test]
+    fn rejects_unsupported_or_invalid_hands() {
+        let rules = BasicRules;
+
+        assert!(rules
+            .classify(&[
+                card(Rank::Three, Suit::Clubs),
+                card(Rank::Four, Suit::Clubs),
+            ])
+            .is_none());
+        assert!(rules
+            .classify(&[Card::joker(Rank::BlackJoker), Card::joker(Rank::BlackJoker)])
+            .is_none());
+    }
 }

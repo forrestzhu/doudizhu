@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>斗地主</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>斗地主</h1>
+          <p id="roundMeta" class="round-meta">Seed 42</p>
+        </div>
+        <section class="controls" aria-label="发牌控制">
+          <label class="seed-field">
+            <span>Seed</span>
+            <input id="seedInput" type="number" min="0" step="1" value="42" />
+          </label>
+          <div class="viewer-tabs" role="group" aria-label="视角">
+            <button class="viewer-tab active" data-viewer="0" type="button">玩家 0</button>
+            <button class="viewer-tab" data-viewer="1" type="button">玩家 1</button>
+            <button class="viewer-tab" data-viewer="2" type="button">玩家 2</button>
+          </div>
+          <button id="dealButton" class="primary-action" type="button">发牌</button>
+        </section>
+      </header>
+
+      <section class="table" aria-label="牌桌">
+        <article class="seat seat-opponent seat-left" id="player1"></article>
+        <article class="seat seat-opponent seat-right" id="player2"></article>
+
+        <section class="center-panel" aria-label="桌面">
+          <div class="turn-strip">
+            <span id="statusText">准备</span>
+            <strong id="viewerText">玩家 0 视角</strong>
+          </div>
+          <div class="bottom-zone">
+            <h2>底牌</h2>
+            <div id="bottomCards" class="cards bottom-cards"></div>
+          </div>
+        </section>
+
+        <article class="seat seat-self" id="player0"></article>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

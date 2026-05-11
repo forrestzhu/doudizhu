@@ -74,6 +74,10 @@ docs/_build/
 # PyBuilder
 .pybuilder/
 target/
+node_modules/
+out/
+test-results/
+playwright-report/
 
 # Jupyter Notebook
 .ipynb_checkpoints

@@ -7,7 +7,7 @@ run it deterministically, and make the output machine-readable.
 
 The project will eventually have multiple decision systems: humans, rule bots,
 search players, and LLM players. Those systems need a stable evaluation loop
-that is independent of Tauri and independent of subjective review.
+that is independent of Electron and independent of subjective review.
 
 ## Commands
 
@@ -87,4 +87,3 @@ Reports include:
 - `details`: kind-specific payload
 
 Use `--format json` for future CI, dashboards, or LLM policy evals.
-

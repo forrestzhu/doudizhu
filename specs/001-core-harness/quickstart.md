@@ -31,6 +31,25 @@ cargo run --bin harness -- --scenario evals/scenarios/visibility_no_leak.json --
 ./scripts/verify.sh
 ```
 
+## Run Electron Deal Prototype
+
+```sh
+npm install
+npm start
+```
+
+The Electron shell calls the Rust harness deal endpoint and renders the selected
+player view without opponent hand data.
+
+## Run Electron E2E Tests
+
+```sh
+npm run test:e2e
+```
+
+The E2E tests launch Electron with Playwright and exercise the real Rust harness
+deal endpoint.
+
 ## Expected Output Shape
 
 ```text
