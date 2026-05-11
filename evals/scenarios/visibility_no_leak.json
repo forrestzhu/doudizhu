@@ -1,0 +1,11 @@
+{
+  "name": "visibility_no_leak",
+  "kind": "visibility",
+  "hands": [["3C", "6C"], ["4C", "7C"], ["5C", "8C"]],
+  "viewer": 1,
+  "expect": {
+    "hand": ["4C", "7C"],
+    "hand_counts": [2, 2, 2],
+    "forbidden_cards": ["3C", "5C"]
+  }
+}

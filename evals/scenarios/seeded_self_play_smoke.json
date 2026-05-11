@@ -1,0 +1,9 @@
+{
+  "name": "seeded_self_play_smoke",
+  "kind": "self_play",
+  "seed": 42,
+  "games": 2,
+  "expect": {
+    "wins": [1, 1, 0]
+  }
+}

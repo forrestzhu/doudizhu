@@ -1,0 +1,10 @@
+{
+  "name": "bomb_beats_pair",
+  "kind": "legal_candidates",
+  "hand": ["4C", "4D", "4H", "4S", "3C"],
+  "previous_play": ["7C", "7D"],
+  "expect": {
+    "contains": [["4C", "4D", "4H", "4S"]],
+    "excludes": [["3C"]]
+  }
+}
