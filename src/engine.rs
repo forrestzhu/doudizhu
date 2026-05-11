@@ -63,17 +63,36 @@ impl Default for GameConfig {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameOutcome {
     pub winner: PlayerId,
     pub turns: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GameStatus {
+    Running,
+    Finished(GameOutcome),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepResult {
+    pub player: PlayerId,
+    pub decision: Decision,
+    pub status: GameStatus,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum GameError {
     InvalidPlayerCount,
+    InvalidPlayer(PlayerId),
     InvalidRelationshipMatrix,
     TurnLimitExceeded,
+    GameFinished(GameOutcome),
+    OutOfTurn {
+        expected: PlayerId,
+        actual: PlayerId,
+    },
     IllegalPass(PlayerId),
     IllegalHand(PlayerId),
     MissingCard(PlayerId, Card),
@@ -81,11 +100,13 @@ pub enum GameError {
 
 pub struct Game {
     hands: Vec<Vec<Card>>,
+    bottom_cards: Vec<Card>,
     history: Vec<TurnRecord>,
     previous_play: Option<ClassifiedHand>,
     previous_player: Option<PlayerId>,
     current_player: PlayerId,
     passes_since_play: usize,
+    winner: Option<PlayerId>,
     config: GameConfig,
     rules: BasicRules,
 }
@@ -104,25 +125,126 @@ impl Game {
 
         Ok(Self {
             hands: deal.hands,
+            bottom_cards: deal.bottom_cards,
             history: Vec::new(),
             previous_play: None,
             previous_player: None,
             current_player: PlayerId(0),
             passes_since_play: 0,
+            winner: None,
             config,
             rules: BasicRules,
         })
     }
 
     pub fn player_view(&self, player: PlayerId) -> PlayerView {
-        PlayerView {
+        self.player_view_checked(player)
+            .expect("player id must be inside game")
+    }
+
+    pub fn player_view_checked(&self, player: PlayerId) -> Result<PlayerView, GameError> {
+        if player.0 >= self.hands.len() {
+            return Err(GameError::InvalidPlayer(player));
+        }
+
+        Ok(PlayerView {
             self_id: player,
             hand: self.hands[player.0].clone(),
             hand_counts: self.hands.iter().map(Vec::len).collect(),
             relationships: self.config.relationships[player.0].clone(),
             history: self.history.clone(),
             previous_play: self.previous_play.clone(),
+        })
+    }
+
+    pub fn current_player(&self) -> PlayerId {
+        self.current_player
+    }
+
+    pub fn player_count(&self) -> usize {
+        self.hands.len()
+    }
+
+    pub fn status(&self) -> GameStatus {
+        self.winner
+            .map(|winner| {
+                GameStatus::Finished(GameOutcome {
+                    winner,
+                    turns: self.history.len(),
+                })
+            })
+            .unwrap_or(GameStatus::Running)
+    }
+
+    pub fn finished(&self) -> bool {
+        self.winner.is_some()
+    }
+
+    pub fn winner(&self) -> Option<PlayerId> {
+        self.winner
+    }
+
+    pub fn previous_play(&self) -> Option<&ClassifiedHand> {
+        self.previous_play.as_ref()
+    }
+
+    pub fn previous_player(&self) -> Option<PlayerId> {
+        self.previous_player
+    }
+
+    pub fn bottom_cards(&self) -> &[Card] {
+        &self.bottom_cards
+    }
+
+    pub fn submit_decision(
+        &mut self,
+        player: PlayerId,
+        decision: Decision,
+    ) -> Result<StepResult, GameError> {
+        if player.0 >= self.hands.len() {
+            return Err(GameError::InvalidPlayer(player));
         }
+        if let GameStatus::Finished(outcome) = self.status() {
+            return Err(GameError::GameFinished(outcome));
+        }
+        if self.history.len() >= self.config.max_turns {
+            return Err(GameError::TurnLimitExceeded);
+        }
+        if player != self.current_player {
+            return Err(GameError::OutOfTurn {
+                expected: self.current_player,
+                actual: player,
+            });
+        }
+
+        self.apply_decision(player, decision.clone())?;
+        if self.hands[player.0].is_empty() {
+            self.winner = Some(player);
+        }
+
+        Ok(StepResult {
+            player,
+            decision,
+            status: self.status(),
+        })
+    }
+
+    pub fn step_current(
+        &mut self,
+        policy: &mut dyn DecisionPolicy,
+    ) -> Result<StepResult, GameError> {
+        if let GameStatus::Finished(outcome) = self.status() {
+            return Err(GameError::GameFinished(outcome));
+        }
+
+        let player = self.current_player;
+        let view = self.player_view_checked(player)?;
+        let decision = policy.decide(&view, &self.rules);
+        self.submit_decision(player, decision)
+    }
+
+    pub fn rules(&self) -> &dyn RuleSet {
+        &self.rules
     }
 
     pub fn run(
@@ -135,15 +257,9 @@ impl Game {
 
         while self.history.len() < self.config.max_turns {
             let player = self.current_player;
-            let view = self.player_view(player);
-            let decision = policies[player.0].decide(&view, &self.rules);
-            self.apply_decision(player, decision)?;
-
-            if self.hands[player.0].is_empty() {
-                return Ok(GameOutcome {
-                    winner: player,
-                    turns: self.history.len(),
-                });
+            let result = self.step_current(policies[player.0].as_mut())?;
+            if let GameStatus::Finished(outcome) = result.status {
+                return Ok(outcome);
             }
         }
 
@@ -405,6 +521,65 @@ mod tests {
         assert_eq!(game.history()[0].player, PlayerId(0));
         assert!(game.history()[0].accepted_hand.is_some());
         assert_eq!(game.player_view(PlayerId(0)).hand_counts[0], 0);
+    }
+
+    #[test]
+    fn submit_decision_finishes_game_and_rejects_later_steps() {
+        let deal = Deal {
+            hands: vec![
+                vec![card(Rank::Three, Suit::Clubs)],
+                vec![card(Rank::Four, Suit::Clubs)],
+                vec![card(Rank::Five, Suit::Clubs)],
+            ],
+            bottom_cards: Vec::new(),
+        };
+        let mut game = Game::new(deal, GameConfig::default()).unwrap();
+
+        let result = game
+            .submit_decision(
+                PlayerId(0),
+                Decision::Play(vec![card(Rank::Three, Suit::Clubs)]),
+            )
+            .unwrap();
+
+        assert_eq!(
+            result.status,
+            GameStatus::Finished(GameOutcome {
+                winner: PlayerId(0),
+                turns: 1
+            })
+        );
+        assert!(game.finished());
+        assert_eq!(game.winner(), Some(PlayerId(0)));
+        assert_eq!(
+            game.submit_decision(PlayerId(1), Decision::Pass)
+                .unwrap_err(),
+            GameError::GameFinished(GameOutcome {
+                winner: PlayerId(0),
+                turns: 1
+            })
+        );
+    }
+
+    #[test]
+    fn checked_view_and_submit_reject_invalid_or_out_of_turn_player() {
+        let mut game = small_game();
+
+        assert_eq!(
+            game.player_view_checked(PlayerId(3)).unwrap_err(),
+            GameError::InvalidPlayer(PlayerId(3))
+        );
+        assert_eq!(
+            game.submit_decision(
+                PlayerId(1),
+                Decision::Play(vec![card(Rank::Four, Suit::Clubs)])
+            )
+            .unwrap_err(),
+            GameError::OutOfTurn {
+                expected: PlayerId(0),
+                actual: PlayerId(1)
+            }
+        );
     }
 
     #[test]

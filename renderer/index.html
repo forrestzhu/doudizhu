@@ -23,7 +23,13 @@
             <button class="viewer-tab" data-viewer="1" type="button">玩家 1</button>
             <button class="viewer-tab" data-viewer="2" type="button">玩家 2</button>
           </div>
-          <button id="dealButton" class="primary-action" type="button">发牌</button>
+          <button id="dealButton" class="primary-action" type="button">重新发牌</button>
+          <button id="hintButton" class="secondary-action" type="button">提示</button>
+          <button id="stepButton" class="secondary-action" type="button">单步</button>
+          <label class="toggle-field">
+            <input id="autoplayToggle" type="checkbox" />
+            <span>自动打牌</span>
+          </label>
         </section>
       </header>
 
@@ -36,10 +42,18 @@
             <span id="statusText">准备</span>
             <strong id="viewerText">玩家 0 视角</strong>
           </div>
+          <div class="game-status" aria-label="对局状态">
+            <span id="currentPlayerText">当前玩家 0</span>
+            <span id="winnerText">胜者 未定</span>
+          </div>
           <div class="bottom-zone">
             <h2>底牌</h2>
             <div id="bottomCards" class="cards bottom-cards"></div>
           </div>
+          <section class="play-log" aria-label="公开历史">
+            <p id="previousPlay" class="previous-play">上一手：无</p>
+            <ol id="historyList" class="history-list"></ol>
+          </section>
         </section>
 
         <article class="seat seat-self" id="player0"></article>

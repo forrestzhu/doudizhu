@@ -31,15 +31,16 @@ cargo run --bin harness -- --scenario evals/scenarios/visibility_no_leak.json --
 ./scripts/verify.sh
 ```
 
-## Run Electron Deal Prototype
+## Run Electron Play Prototype
 
 ```sh
 npm install
 npm start
 ```
 
-The Electron shell calls the Rust harness deal endpoint and renders the selected
-player view without opponent hand data.
+The Electron shell starts a deterministic game, renders the selected player view
+without opponent hand data, can request a rule-policy hint, and can step through
+automatic play driven by the Rust trace report.
 
 ## Run Electron E2E Tests
 
@@ -48,7 +49,22 @@ npm run test:e2e
 ```
 
 The E2E tests launch Electron with Playwright and exercise the real Rust harness
-deal endpoint.
+session/trace flow.
+
+## Inspect Session And Trace JSON
+
+```sh
+cargo run --bin harness -- --session --seed 42 --viewer 0 --format json
+cargo run --bin harness -- --trace --seed 42 --format json
+cargo run --bin harness -- --trace --seed 42 --allow-power --format json
+```
+
+`--session` is player-facing and only includes the selected viewer's hand.
+`--trace` is trusted evaluation data and includes complete initial hands,
+bottom cards, public turn history, policy configuration, and outcome for
+strategy optimization. By default the rule policy avoids spending bombs and
+rockets when a normal response exists; `--allow-power` records a configuration
+that permits spending those hands.
 
 ## Expected Output Shape
 

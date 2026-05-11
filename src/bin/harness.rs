@@ -1,4 +1,6 @@
 use doudizhu::harness::{run_deal, run_scenario_file, run_seeded_games};
+use doudizhu::harness::{run_session_after_steps_with_config, run_trace_with_config};
+use doudizhu::RuleBasedPolicyConfig;
 use std::path::Path;
 
 fn main() {
@@ -7,6 +9,9 @@ fn main() {
     let seed = read_u64_arg(&args, "--seed").unwrap_or(1);
     let max_turns = read_usize_arg(&args, "--max-turns").unwrap_or(1_000);
     let format = read_arg(&args, "--format").unwrap_or("text");
+    let policy_config = RuleBasedPolicyConfig {
+        avoid_power_hands: !has_flag(&args, "--allow-power"),
+    };
 
     if has_flag(&args, "--deal") {
         let viewer = read_usize_arg(&args, "--viewer").unwrap_or(0);
@@ -19,6 +24,54 @@ fn main() {
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
         } else {
             print_deal_report(&report);
+        }
+
+        return;
+    }
+
+    if has_flag(&args, "--session") {
+        let viewer = read_usize_arg(&args, "--viewer").unwrap_or(0);
+        let steps = read_usize_arg(&args, "--steps").unwrap_or(0);
+        let report =
+            run_session_after_steps_with_config(seed, viewer, steps, max_turns, policy_config)
+                .unwrap_or_else(|error| {
+                    eprintln!("session seed={seed} viewer={viewer} error={error:?}");
+                    std::process::exit(1);
+                });
+
+        if format == "json" {
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        } else {
+            println!(
+                "session seed={} viewer={} current_player={} visible_hand={:?}",
+                report.seed,
+                report.view.viewer,
+                report.view.current_player,
+                report.view.visible_hand
+            );
+        }
+
+        return;
+    }
+
+    if has_flag(&args, "--trace") {
+        let report =
+            run_trace_with_config(seed, max_turns, policy_config).unwrap_or_else(|error| {
+                eprintln!("trace seed={seed} error={error:?}");
+                std::process::exit(1);
+            });
+
+        if format == "json" {
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            std::process::exit(if report.error.is_none() { 0 } else { 1 });
+        } else {
+            println!(
+                "trace seed={} winner={:?} turns={} error={:?}",
+                report.seed, report.winner, report.turns, report.error
+            );
+            if report.error.is_some() {
+                std::process::exit(1);
+            }
         }
 
         return;

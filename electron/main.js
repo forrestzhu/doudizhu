@@ -3,6 +3,8 @@ const { execFile } = require('node:child_process');
 const path = require('node:path');
 
 const projectRoot = path.resolve(__dirname, '..');
+const sessions = new Map();
+let nextGameId = 1;
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -24,7 +26,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  ipcMain.handle('deal', async (_event, request) => deal(request));
+  ipcMain.handle('start-game', async (_event, request) => startGame(request));
+  ipcMain.handle('set-viewer', async (_event, request) => setViewer(request));
+  ipcMain.handle('get-hint', async (_event, request) => getHint(request));
+  ipcMain.handle('auto-step', async (_event, request) => autoStep(request));
   createWindow();
 
   app.on('activate', () => {
@@ -40,18 +45,149 @@ app.on('window-all-closed', () => {
   }
 });
 
-function deal(request = {}) {
+async function startGame(request = {}) {
   const seed = integerOrDefault(request.seed, 42);
-  const viewer = integerOrDefault(request.viewer, 0);
+  const viewer = normalizedViewer(request.viewer);
+  const gameId = `game-${nextGameId}`;
+  nextGameId += 1;
+
+  const session = {
+    gameId,
+    seed,
+    cursor: 0,
+  };
+  sessions.set(gameId, session);
+
+  return gameViewFromHarness(session, viewer);
+}
+
+async function setViewer(request = {}) {
+  const gameId = String(request.gameId || '');
+  const session = requireSession(gameId);
+  const viewer = normalizedViewer(request.viewer);
+  return gameViewFromHarness(session, viewer);
+}
+
+async function getHint(request = {}) {
+  const gameId = String(request.gameId || '');
+  const session = requireSession(gameId);
+  const viewer = normalizedViewer(request.viewer);
+  const view = await gameViewFromHarness(session, viewer);
+  if (view.current_player !== viewer || view.winner !== null) {
+    return {
+      recommended: [],
+      candidates: [],
+    };
+  }
+
+  const report = await sessionReport(session.seed, viewer, session.cursor);
+  return normalizeHintReport(report.hint);
+}
+
+async function autoStep(request = {}) {
+  const gameId = String(request.gameId || '');
+  const session = requireSession(gameId);
+  const viewer = normalizedViewer(request.viewer);
+  const current = await gameViewFromHarness(session, viewer);
+  if (current.winner === null || current.winner === undefined) {
+    session.cursor += 1;
+  }
+
+  return gameViewFromHarness(session, viewer);
+}
+
+async function gameViewFromHarness(session, viewer) {
+  const report = await sessionReport(session.seed, viewer, session.cursor);
+  return normalizeGameView(report.view, session.gameId);
+}
+
+function sessionReport(seed, viewer, steps) {
   return runHarness([
-    '--deal',
+    '--session',
     '--seed',
     String(seed),
     '--viewer',
     String(viewer),
+    '--steps',
+    String(steps),
     '--format',
     'json',
   ]);
+}
+
+function normalizeGameView(view, gameId) {
+  return {
+    game_id: gameId,
+    seed: view.seed,
+    viewer: view.viewer,
+    current_player: view.current_player,
+    winner: view.winner,
+    bottom_cards: view.bottom_cards || [],
+    previous_play: normalizePreviousPlay(view),
+    players: (view.players || []).map((player) => ({
+      ...player,
+      visible_hand: player.id === view.viewer ? view.visible_hand || [] : [],
+    })),
+    history: (view.history || []).map(normalizeTurn),
+  };
+}
+
+function normalizeHintReport(hint) {
+  return {
+    recommended: hint.recommended || [],
+    candidates: (hint.legal_hints || []).map((cards) => ({
+      cards,
+      kind: inferKind(cards),
+    })),
+  };
+}
+
+function normalizeTurn(entry) {
+  const action = entry.decision === 'Pass' ? 'pass' : 'play';
+  return {
+    turn: entry.turn,
+    player: entry.player,
+    action,
+    cards: entry.cards || [],
+    kind: entry.accepted_hand?.kind || (action === 'pass' ? 'Pass' : inferKind(entry.cards || [])),
+    hand_count_after: '',
+  };
+}
+
+function normalizePreviousPlay(view) {
+  const hand = view.previous_play;
+  if (!hand) {
+    return null;
+  }
+  return {
+    player: view.previous_player,
+    action: 'play',
+    cards: hand.cards || [],
+    kind: hand.kind,
+  };
+}
+
+function inferKind(cards) {
+  if (cards.length === 0) {
+    return 'Pass';
+  }
+  if (cards.length === 1) {
+    return 'Single';
+  }
+  return `Cards${cards.length}`;
+}
+
+function requireSession(gameId) {
+  const session = sessions.get(gameId);
+  if (!session) {
+    throw new Error(`unknown gameId: ${gameId}`);
+  }
+  return session;
+}
+
+function normalizedViewer(value) {
+  const parsed = integerOrDefault(value, 0);
+  return parsed >= 0 && parsed <= 2 ? parsed : 0;
 }
 
 function integerOrDefault(value, fallback) {

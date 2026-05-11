@@ -1,7 +1,7 @@
 use crate::cards::Card;
-use crate::decision::{legal_candidates, DecisionPolicy, LowestLegalPolicy};
-use crate::engine::{Deal, Game, GameConfig, GameError, PlayerId, TurnRecord};
-use crate::rules::{BasicRules, RuleSet};
+use crate::decision::{legal_candidates, DecisionPolicy, RuleBasedPolicy, RuleBasedPolicyConfig};
+use crate::engine::{Deal, Game, GameConfig, GameError, GameStatus, PlayerId, TurnRecord};
+use crate::rules::{BasicRules, ClassifiedHand, RuleSet};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -92,6 +92,88 @@ pub struct DealReport {
     pub viewer: usize,
     pub bottom_cards: Vec<String>,
     pub players: Vec<DealPlayerReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PlayerPublicReport {
+    pub id: usize,
+    pub role: String,
+    pub relationship: String,
+    pub hand_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HandReport {
+    pub kind: String,
+    pub cards: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TurnReport {
+    pub turn: usize,
+    pub player: usize,
+    pub decision: String,
+    pub cards: Vec<String>,
+    pub accepted_hand: Option<HandReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct GameViewReport {
+    pub schema_version: String,
+    pub deterministic: bool,
+    pub seed: u64,
+    pub viewer: usize,
+    pub current_player: usize,
+    pub winner: Option<usize>,
+    pub visible_hand: Vec<String>,
+    pub hand_counts: Vec<usize>,
+    pub players: Vec<PlayerPublicReport>,
+    pub relationships: Vec<String>,
+    pub history: Vec<TurnReport>,
+    pub previous_player: Option<usize>,
+    pub previous_play: Option<HandReport>,
+    pub bottom_cards: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HintReport {
+    pub schema_version: String,
+    pub deterministic: bool,
+    pub seed: u64,
+    pub viewer: usize,
+    pub current_player: usize,
+    pub legal_hints: Vec<Vec<String>>,
+    pub recommended: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SessionReport {
+    pub schema_version: String,
+    pub deterministic: bool,
+    pub seed: u64,
+    pub view: GameViewReport,
+    pub hint: HintReport,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct EpisodeReport {
+    pub schema_version: String,
+    pub deterministic: bool,
+    pub seed: u64,
+    pub policies: Vec<PolicyReport>,
+    pub initial_hands: Vec<Vec<String>>,
+    pub bottom_cards: Vec<String>,
+    pub winner: Option<usize>,
+    pub turns: usize,
+    pub history: Vec<TurnReport>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PolicyReport {
+    pub player: usize,
+    pub name: String,
+    pub avoid_power_hands: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,7 +284,7 @@ pub fn run_seeded_games(
             ..GameConfig::default()
         };
         let mut game = Game::new(deal, config)?;
-        let mut policies = lowest_legal_policies(3);
+        let mut policies = rule_based_policies(3, RuleBasedPolicyConfig::default());
 
         match game.run(&mut policies) {
             Ok(outcome) => {
@@ -280,6 +362,93 @@ pub fn run_deal(seed: u64, viewer: usize) -> Result<DealReport, HarnessError> {
         viewer,
         bottom_cards,
         players,
+    })
+}
+
+pub fn run_session(seed: u64, viewer: usize) -> Result<SessionReport, HarnessError> {
+    run_session_after_steps(seed, viewer, 0, 1_000)
+}
+
+pub fn run_session_after_steps(
+    seed: u64,
+    viewer: usize,
+    steps: usize,
+    max_turns: usize,
+) -> Result<SessionReport, HarnessError> {
+    run_session_after_steps_with_config(
+        seed,
+        viewer,
+        steps,
+        max_turns,
+        RuleBasedPolicyConfig::default(),
+    )
+}
+
+pub fn run_session_after_steps_with_config(
+    seed: u64,
+    viewer: usize,
+    steps: usize,
+    max_turns: usize,
+    policy_config: RuleBasedPolicyConfig,
+) -> Result<SessionReport, HarnessError> {
+    let deal = Deal::from_seed(seed, 3);
+    let config = GameConfig {
+        max_turns,
+        ..GameConfig::default()
+    };
+    let mut game = Game::new(deal, config)?;
+    let mut policies = rule_based_policies(3, policy_config);
+    for _ in 0..steps {
+        if game.finished() {
+            break;
+        }
+        let player = game.current_player();
+        game.step_current(policies[player.0].as_mut())?;
+    }
+
+    Ok(SessionReport {
+        schema_version: "2026-05-11".to_string(),
+        deterministic: true,
+        seed,
+        view: game_view_report(&game, seed, viewer)?,
+        hint: hint_report(&game, seed, viewer)?,
+    })
+}
+
+pub fn run_trace(seed: u64, max_turns: usize) -> Result<EpisodeReport, HarnessError> {
+    run_trace_with_config(seed, max_turns, RuleBasedPolicyConfig::default())
+}
+
+pub fn run_trace_with_config(
+    seed: u64,
+    max_turns: usize,
+    policy_config: RuleBasedPolicyConfig,
+) -> Result<EpisodeReport, HarnessError> {
+    let deal = Deal::from_seed(seed, 3);
+    let initial_hands = deal.hands.iter().map(|hand| card_strings(hand)).collect();
+    let bottom_cards = card_strings(&deal.bottom_cards);
+    let config = GameConfig {
+        max_turns,
+        ..GameConfig::default()
+    };
+    let mut game = Game::new(deal, config)?;
+    let mut policies = rule_based_policies(3, policy_config);
+    let error = match game.run(&mut policies) {
+        Ok(_) => None,
+        Err(error) => Some(format!("{error:?}")),
+    };
+
+    Ok(EpisodeReport {
+        schema_version: "2026-05-11".to_string(),
+        deterministic: true,
+        seed,
+        policies: policy_reports(3, policy_config),
+        initial_hands,
+        bottom_cards,
+        winner: game.winner().map(|winner| winner.0),
+        turns: game.history().len(),
+        history: public_history(game.history()),
+        error,
     })
 }
 
@@ -450,10 +619,126 @@ fn report(
     }
 }
 
-fn lowest_legal_policies(players: usize) -> Vec<Box<dyn DecisionPolicy>> {
+fn rule_based_policies(
+    players: usize,
+    config: RuleBasedPolicyConfig,
+) -> Vec<Box<dyn DecisionPolicy>> {
     (0..players)
-        .map(|_| Box::<LowestLegalPolicy>::default() as Box<dyn DecisionPolicy>)
+        .map(|_| Box::new(RuleBasedPolicy::new(config)) as Box<dyn DecisionPolicy>)
         .collect()
+}
+
+fn policy_reports(players: usize, config: RuleBasedPolicyConfig) -> Vec<PolicyReport> {
+    (0..players)
+        .map(|player| PolicyReport {
+            player,
+            name: "rule_based".to_string(),
+            avoid_power_hands: config.avoid_power_hands,
+        })
+        .collect()
+}
+
+fn game_view_report(game: &Game, seed: u64, viewer: usize) -> Result<GameViewReport, HarnessError> {
+    let view = game.player_view_checked(PlayerId(viewer))?;
+    let players = view
+        .hand_counts
+        .iter()
+        .enumerate()
+        .map(|(id, hand_count)| PlayerPublicReport {
+            id,
+            role: role_name(id),
+            relationship: format!("{:?}", view.relationships[id]),
+            hand_count: *hand_count,
+        })
+        .collect();
+
+    Ok(GameViewReport {
+        schema_version: "2026-05-11".to_string(),
+        deterministic: true,
+        seed,
+        viewer,
+        current_player: game.current_player().0,
+        winner: match game.status() {
+            GameStatus::Running => None,
+            GameStatus::Finished(outcome) => Some(outcome.winner.0),
+        },
+        visible_hand: card_strings(&view.hand),
+        hand_counts: view.hand_counts,
+        players,
+        relationships: view
+            .relationships
+            .iter()
+            .map(|relationship| format!("{relationship:?}"))
+            .collect(),
+        history: public_history(&view.history),
+        previous_player: game.previous_player().map(|player| player.0),
+        previous_play: view.previous_play.as_ref().map(hand_report),
+        bottom_cards: card_strings(game.bottom_cards()),
+    })
+}
+
+fn hint_report(game: &Game, seed: u64, viewer: usize) -> Result<HintReport, HarnessError> {
+    let view = game.player_view_checked(PlayerId(viewer))?;
+    let hints = legal_candidates(&view.hand, view.previous_play.as_ref(), game.rules());
+    let legal_hints: Vec<Vec<String>> =
+        hints.iter().map(|hand| card_strings(&hand.cards)).collect();
+    let recommended = if game.current_player() == PlayerId(viewer) {
+        let mut policy = RuleBasedPolicy::default();
+        match policy.decide(&view, game.rules()) {
+            crate::decision::Decision::Play(cards) => Some(card_strings(&cards)),
+            crate::decision::Decision::Pass => Some(Vec::new()),
+        }
+    } else {
+        None
+    };
+
+    Ok(HintReport {
+        schema_version: "2026-05-11".to_string(),
+        deterministic: true,
+        seed,
+        viewer,
+        current_player: game.current_player().0,
+        legal_hints,
+        recommended,
+    })
+}
+
+fn public_history(history: &[TurnRecord]) -> Vec<TurnReport> {
+    history
+        .iter()
+        .enumerate()
+        .map(|(index, record)| {
+            let cards = match &record.decision {
+                crate::decision::Decision::Pass => Vec::new(),
+                crate::decision::Decision::Play(cards) => card_strings(cards),
+            };
+            TurnReport {
+                turn: index + 1,
+                player: record.player.0,
+                decision: match record.decision {
+                    crate::decision::Decision::Pass => "Pass".to_string(),
+                    crate::decision::Decision::Play(_) => "Play".to_string(),
+                },
+                cards,
+                accepted_hand: record.accepted_hand.as_ref().map(hand_report),
+            }
+        })
+        .collect()
+}
+
+fn hand_report(hand: &ClassifiedHand) -> HandReport {
+    HandReport {
+        kind: format!("{:?}", hand.kind),
+        cards: card_strings(&hand.cards),
+    }
+}
+
+fn role_name(id: usize) -> String {
+    if id == 0 {
+        "Landlord".to_string()
+    } else {
+        "Peasant".to_string()
+    }
 }
 
 fn parse_cards(values: &[String]) -> Result<Vec<Card>, HarnessError> {
@@ -507,7 +792,12 @@ fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use crate::cards::{Card, Rank, Suit};
-    use crate::harness::{run_deal, run_scenario_str, HarnessError};
+    use crate::decision::RuleBasedPolicyConfig;
+    use crate::engine::Deal;
+    use crate::harness::{
+        run_deal, run_scenario_str, run_session, run_session_after_steps, run_trace,
+        run_trace_with_config, HarnessError,
+    };
     use std::str::FromStr;
 
     #[test]
@@ -626,5 +916,83 @@ mod tests {
         let error = run_deal(42, 3).unwrap_err();
 
         assert!(matches!(error, HarnessError::InvalidScenario(_)));
+    }
+
+    #[test]
+    fn session_view_and_hint_do_not_leak_other_hands() {
+        let seed = 42;
+        let viewer = 1;
+        let deal = Deal::from_seed(seed, 3);
+        let report = run_session(seed, viewer).unwrap();
+        let hidden_cards = deal
+            .hands
+            .iter()
+            .enumerate()
+            .filter(|(id, _)| *id != viewer)
+            .flat_map(|(_, hand)| hand.iter().map(ToString::to_string))
+            .collect::<Vec<_>>();
+
+        assert_eq!(report.view.viewer, viewer);
+        assert_eq!(report.view.visible_hand.len(), deal.hands[viewer].len());
+        for hidden in hidden_cards {
+            assert!(!report.view.visible_hand.contains(&hidden));
+            assert!(report
+                .hint
+                .legal_hints
+                .iter()
+                .all(|hint| !hint.contains(&hidden)));
+        }
+        assert_eq!(report.view.hand_counts, [20, 17, 17]);
+        assert_eq!(report.view.bottom_cards.len(), 3);
+    }
+
+    #[test]
+    fn trace_report_contains_trusted_initial_hands() {
+        let seed = 42;
+        let deal = Deal::from_seed(seed, 3);
+        let report = run_trace(seed, 1_000).unwrap();
+
+        assert_eq!(report.seed, seed);
+        assert_eq!(report.initial_hands.len(), 3);
+        assert_eq!(
+            report
+                .initial_hands
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>(),
+            [20, 17, 17]
+        );
+        assert_eq!(report.initial_hands[0], super::card_strings(&deal.hands[0]));
+        assert_eq!(report.bottom_cards, super::card_strings(&deal.bottom_cards));
+        assert!(report.error.is_none(), "{report:#?}");
+        assert!(!report.history.is_empty());
+    }
+
+    #[test]
+    fn trace_report_records_policy_configuration() {
+        let report = run_trace_with_config(
+            42,
+            1_000,
+            RuleBasedPolicyConfig {
+                avoid_power_hands: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.policies.len(), 3);
+        assert!(report
+            .policies
+            .iter()
+            .all(|policy| policy.name == "rule_based" && !policy.avoid_power_hands));
+    }
+
+    #[test]
+    fn stepped_session_uses_engine_visibility_after_pass_reset() {
+        let report = run_session_after_steps(42, 2, 14, 1_000).unwrap();
+
+        assert_eq!(report.view.current_player, 2);
+        assert_eq!(report.view.previous_player, Some(2));
+        assert!(report.view.previous_play.is_none());
+        assert_eq!(report.hint.recommended, Some(vec!["3C".to_string()]));
     }
 }
