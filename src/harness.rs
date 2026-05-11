@@ -798,6 +798,7 @@ mod tests {
         run_deal, run_scenario_str, run_session, run_session_after_steps, run_trace,
         run_trace_with_config, HarnessError,
     };
+    use crate::rules::{BasicRules, RuleSet};
     use std::str::FromStr;
 
     #[test]
@@ -984,6 +985,42 @@ mod tests {
             .policies
             .iter()
             .all(|policy| policy.name == "rule_based" && !policy.avoid_power_hands));
+    }
+
+    #[test]
+    fn trace_history_never_contains_smaller_response() {
+        let rules = BasicRules;
+        for seed in [42, 43, 44, 45, 46] {
+            let report = run_trace(seed, 1_000).unwrap();
+            let mut previous = None;
+            let mut passes_since_play = 0usize;
+
+            for turn in &report.history {
+                match turn.decision.as_str() {
+                    "Pass" => {
+                        passes_since_play += 1;
+                        if passes_since_play >= 2 {
+                            previous = None;
+                            passes_since_play = 0;
+                        }
+                    }
+                    "Play" => {
+                        let cards = super::parse_cards(&turn.cards).unwrap();
+                        let classified = rules.classify(&cards).unwrap();
+                        assert!(
+                            rules.can_play_over(&classified, previous.as_ref()),
+                            "seed {seed} turn {} played {:?} over {:?}",
+                            turn.turn,
+                            classified,
+                            previous
+                        );
+                        previous = Some(classified);
+                        passes_since_play = 0;
+                    }
+                    other => panic!("unexpected decision: {other}"),
+                }
+            }
+        }
     }
 
     #[test]
