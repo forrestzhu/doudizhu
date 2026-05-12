@@ -277,6 +277,14 @@ mod tests {
     use super::*;
     use crate::cards::Suit;
 
+    #[derive(Debug)]
+    struct ComparisonCase {
+        name: String,
+        candidate: Vec<Card>,
+        previous: Vec<Card>,
+        expected: bool,
+    }
+
     fn card(rank: Rank, suit: Suit) -> Card {
         Card::suited(rank, suit)
     }
@@ -537,6 +545,50 @@ mod tests {
                 card(Rank::Seven, Suit::Clubs),
             ])
             .is_none());
+    }
+
+    #[test]
+    fn rejects_sequences_that_overlap_two_or_jokers() {
+        let rules = BasicRules;
+        let invalid_cases = [
+            straight(&[Rank::Jack, Rank::Queen, Rank::King, Rank::Ace, Rank::Two]),
+            straight(&[Rank::King, Rank::Ace, Rank::Two, Rank::Three, Rank::Four]),
+            straight(&[Rank::Ace, Rank::Two, Rank::Three, Rank::Four, Rank::Five]),
+            straight(&[
+                Rank::Ten,
+                Rank::Jack,
+                Rank::Queen,
+                Rank::King,
+                Rank::BlackJoker,
+            ]),
+            serial_pairs(&[Rank::Queen, Rank::King, Rank::Ace, Rank::Two]),
+            serial_pairs(&[Rank::Ace, Rank::Two, Rank::Three]),
+            airplane(&[Rank::Queen, Rank::King, Rank::Ace, Rank::Two]),
+            airplane(&[Rank::Ace, Rank::Two]),
+        ];
+
+        for cards in invalid_cases {
+            assert!(rules.classify(&cards).is_none(), "{cards:?}");
+        }
+
+        assert_kind(
+            &rules,
+            &straight(&[Rank::Ten, Rank::Jack, Rank::Queen, Rank::King, Rank::Ace]),
+            HandKind::Straight,
+            Rank::Ace,
+        );
+        assert_kind(
+            &rules,
+            &serial_pairs(&[Rank::Jack, Rank::Queen, Rank::King, Rank::Ace]),
+            HandKind::SerialPairs,
+            Rank::Ace,
+        );
+        assert_kind(
+            &rules,
+            &airplane(&[Rank::Queen, Rank::King, Rank::Ace]),
+            HandKind::Airplane,
+            Rank::Ace,
+        );
     }
 
     #[test]
@@ -831,10 +883,495 @@ mod tests {
         }
     }
 
+    #[test]
+    fn comparison_matrix_covers_common_and_corner_cases() {
+        let rules = BasicRules;
+        let cases = comparison_cases();
+
+        assert!(
+            cases.len() >= 100,
+            "expected at least 100 comparison cases, got {}",
+            cases.len()
+        );
+
+        for case in cases {
+            let candidate = rules
+                .classify(&case.candidate)
+                .unwrap_or_else(|| panic!("candidate should classify: {}", case.name));
+            let previous = rules
+                .classify(&case.previous)
+                .unwrap_or_else(|| panic!("previous should classify: {}", case.name));
+
+            assert_eq!(
+                rules.can_play_over(&candidate, Some(&previous)),
+                case.expected,
+                "{}: candidate {:?} over previous {:?}",
+                case.name,
+                candidate,
+                previous
+            );
+        }
+    }
+
     fn assert_kind(rules: &BasicRules, cards: &[Card], kind: HandKind, strength: Rank) {
         let hand = rules.classify(cards).unwrap();
 
         assert_eq!(hand.kind, kind);
         assert_eq!(hand.strength, strength.strength());
+    }
+
+    fn comparison_cases() -> Vec<ComparisonCase> {
+        let mut cases = Vec::new();
+        let all_ranks = [
+            Rank::Three,
+            Rank::Four,
+            Rank::Five,
+            Rank::Six,
+            Rank::Seven,
+            Rank::Eight,
+            Rank::Nine,
+            Rank::Ten,
+            Rank::Jack,
+            Rank::Queen,
+            Rank::King,
+            Rank::Ace,
+            Rank::Two,
+            Rank::BlackJoker,
+            Rank::RedJoker,
+        ];
+        let non_joker_ranks = [
+            Rank::Three,
+            Rank::Four,
+            Rank::Five,
+            Rank::Six,
+            Rank::Seven,
+            Rank::Eight,
+            Rank::Nine,
+            Rank::Ten,
+            Rank::Jack,
+            Rank::Queen,
+            Rank::King,
+            Rank::Ace,
+            Rank::Two,
+        ];
+
+        for window in all_ranks.windows(2) {
+            cases.push(compare_case(
+                format!("{:?} single beats {:?}", window[1], window[0]),
+                single(window[1]),
+                single(window[0]),
+                true,
+            ));
+            cases.push(compare_case(
+                format!("{:?} single cannot beat {:?}", window[0], window[1]),
+                single(window[0]),
+                single(window[1]),
+                false,
+            ));
+        }
+
+        for window in non_joker_ranks.windows(2) {
+            cases.push(compare_case(
+                format!("{:?} pair beats {:?}", window[1], window[0]),
+                pair(window[1]),
+                pair(window[0]),
+                true,
+            ));
+            cases.push(compare_case(
+                format!("{:?} pair cannot beat {:?}", window[0], window[1]),
+                pair(window[0]),
+                pair(window[1]),
+                false,
+            ));
+            cases.push(compare_case(
+                format!("{:?} triple beats {:?}", window[1], window[0]),
+                triple(window[1]),
+                triple(window[0]),
+                true,
+            ));
+            cases.push(compare_case(
+                format!("{:?} triple cannot beat {:?}", window[0], window[1]),
+                triple(window[0]),
+                triple(window[1]),
+                false,
+            ));
+            cases.push(compare_case(
+                format!("{:?} bomb beats {:?} bomb", window[1], window[0]),
+                bomb(window[1]),
+                bomb(window[0]),
+                true,
+            ));
+            cases.push(compare_case(
+                format!("{:?} bomb cannot beat {:?} bomb", window[0], window[1]),
+                bomb(window[0]),
+                bomb(window[1]),
+                false,
+            ));
+        }
+
+        cases.extend([
+            compare_case("rocket beats highest bomb", rocket(), bomb(Rank::Two), true),
+            compare_case(
+                "highest bomb cannot beat rocket",
+                bomb(Rank::Two),
+                rocket(),
+                false,
+            ),
+            compare_case("rocket cannot beat rocket", rocket(), rocket(), false),
+            compare_case(
+                "bomb beats straight",
+                bomb(Rank::Three),
+                straight(&[Rank::Ten, Rank::Jack, Rank::Queen, Rank::King, Rank::Ace]),
+                true,
+            ),
+            compare_case(
+                "straight cannot beat bomb",
+                straight(&[Rank::Ten, Rank::Jack, Rank::Queen, Rank::King, Rank::Ace]),
+                bomb(Rank::Three),
+                false,
+            ),
+            compare_case(
+                "bomb beats airplane with pairs",
+                bomb(Rank::Four),
+                airplane_with_pairs(&[Rank::Six, Rank::Seven], &[Rank::Jack, Rank::Queen]),
+                true,
+            ),
+            compare_case(
+                "rocket beats airplane with singles",
+                rocket(),
+                airplane_with_singles(&[Rank::Six, Rank::Seven], &[Rank::Jack, Rank::Queen]),
+                true,
+            ),
+            compare_case(
+                "pair cannot beat single",
+                pair(Rank::Ace),
+                single(Rank::King),
+                false,
+            ),
+            compare_case(
+                "single cannot beat pair",
+                single(Rank::Two),
+                pair(Rank::Three),
+                false,
+            ),
+            compare_case(
+                "triple cannot beat pair",
+                triple(Rank::Ace),
+                pair(Rank::Two),
+                false,
+            ),
+            compare_case(
+                "triple with single cannot beat triple with pair",
+                triple_with_single(Rank::Ace, Rank::Three),
+                triple_with_pair(Rank::King, Rank::Four),
+                false,
+            ),
+            compare_case(
+                "straight cannot beat serial pairs",
+                straight(&[Rank::Nine, Rank::Ten, Rank::Jack, Rank::Queen, Rank::King]),
+                serial_pairs(&[Rank::Three, Rank::Four, Rank::Five]),
+                false,
+            ),
+        ]);
+
+        cases.extend([
+            compare_case(
+                "triple with pair compares triple rank not pair rank same triple",
+                triple_with_pair(Rank::Five, Rank::Queen),
+                triple_with_pair(Rank::Five, Rank::Jack),
+                false,
+            ),
+            compare_case(
+                "triple with pair higher triple beats higher carried pair",
+                triple_with_pair(Rank::Six, Rank::Three),
+                triple_with_pair(Rank::Five, Rank::Ace),
+                true,
+            ),
+            compare_case(
+                "triple with pair lower triple cannot beat lower carried pair",
+                triple_with_pair(Rank::Five, Rank::Ace),
+                triple_with_pair(Rank::Six, Rank::Three),
+                false,
+            ),
+            compare_case(
+                "triple with single same triple ignores larger kicker",
+                triple_with_single(Rank::Seven, Rank::Ace),
+                triple_with_single(Rank::Seven, Rank::Three),
+                false,
+            ),
+            compare_case(
+                "triple with single higher triple beats larger kicker",
+                triple_with_single(Rank::Eight, Rank::Three),
+                triple_with_single(Rank::Seven, Rank::Ace),
+                true,
+            ),
+            compare_case(
+                "four with two singles compares quad rank",
+                four_with_two_singles(Rank::Nine, &[Rank::Three, Rank::Four]),
+                four_with_two_singles(Rank::Eight, &[Rank::Ace, Rank::Two]),
+                true,
+            ),
+            compare_case(
+                "four with two singles ignores kickers at equal quad",
+                four_with_two_singles(Rank::Nine, &[Rank::Ace, Rank::Two]),
+                four_with_two_singles(Rank::Nine, &[Rank::Three, Rank::Four]),
+                false,
+            ),
+            compare_case(
+                "four with two pairs compares quad rank",
+                four_with_two_pairs(Rank::Ten, &[Rank::Three, Rank::Four]),
+                four_with_two_pairs(Rank::Nine, &[Rank::King, Rank::Ace]),
+                true,
+            ),
+            compare_case(
+                "four with two pairs ignores carried pairs at equal quad",
+                four_with_two_pairs(Rank::Ten, &[Rank::King, Rank::Ace]),
+                four_with_two_pairs(Rank::Ten, &[Rank::Three, Rank::Four]),
+                false,
+            ),
+            compare_case(
+                "four with two singles cannot beat four with two pairs",
+                four_with_two_singles(Rank::Two, &[Rank::Three, Rank::Four]),
+                four_with_two_pairs(Rank::Three, &[Rank::Four, Rank::Five]),
+                false,
+            ),
+        ]);
+
+        cases.extend([
+            compare_case(
+                "straight same length compares top rank",
+                straight(&[Rank::Four, Rank::Five, Rank::Six, Rank::Seven, Rank::Eight]),
+                straight(&[Rank::Three, Rank::Four, Rank::Five, Rank::Six, Rank::Seven]),
+                true,
+            ),
+            compare_case(
+                "straight lower top cannot beat higher top",
+                straight(&[Rank::Three, Rank::Four, Rank::Five, Rank::Six, Rank::Seven]),
+                straight(&[Rank::Four, Rank::Five, Rank::Six, Rank::Seven, Rank::Eight]),
+                false,
+            ),
+            compare_case(
+                "straight different length cannot compare upward",
+                straight(&[
+                    Rank::Three,
+                    Rank::Four,
+                    Rank::Five,
+                    Rank::Six,
+                    Rank::Seven,
+                    Rank::Eight,
+                ]),
+                straight(&[Rank::Ten, Rank::Jack, Rank::Queen, Rank::King, Rank::Ace]),
+                false,
+            ),
+            compare_case(
+                "straight different length cannot compare downward",
+                straight(&[Rank::Ten, Rank::Jack, Rank::Queen, Rank::King, Rank::Ace]),
+                straight(&[
+                    Rank::Three,
+                    Rank::Four,
+                    Rank::Five,
+                    Rank::Six,
+                    Rank::Seven,
+                    Rank::Eight,
+                ]),
+                false,
+            ),
+            compare_case(
+                "ace-high straight beats king-high straight",
+                straight(&[Rank::Ten, Rank::Jack, Rank::Queen, Rank::King, Rank::Ace]),
+                straight(&[Rank::Nine, Rank::Ten, Rank::Jack, Rank::Queen, Rank::King]),
+                true,
+            ),
+            compare_case(
+                "serial pairs same length compare top rank",
+                serial_pairs(&[Rank::Four, Rank::Five, Rank::Six]),
+                serial_pairs(&[Rank::Three, Rank::Four, Rank::Five]),
+                true,
+            ),
+            compare_case(
+                "serial pairs different length cannot compare",
+                serial_pairs(&[Rank::Three, Rank::Four, Rank::Five, Rank::Six]),
+                serial_pairs(&[Rank::Jack, Rank::Queen, Rank::King]),
+                false,
+            ),
+            compare_case(
+                "airplane same length compares highest triple",
+                airplane(&[Rank::Four, Rank::Five]),
+                airplane(&[Rank::Three, Rank::Four]),
+                true,
+            ),
+            compare_case(
+                "airplane lower highest triple cannot beat",
+                airplane(&[Rank::Three, Rank::Four]),
+                airplane(&[Rank::Four, Rank::Five]),
+                false,
+            ),
+            compare_case(
+                "airplane different length cannot compare",
+                airplane(&[Rank::Three, Rank::Four, Rank::Five]),
+                airplane(&[Rank::Jack, Rank::Queen]),
+                false,
+            ),
+        ]);
+
+        cases.extend([
+            compare_case(
+                "airplane with singles compares triple sequence",
+                airplane_with_singles(&[Rank::Five, Rank::Six], &[Rank::Three, Rank::Four]),
+                airplane_with_singles(&[Rank::Three, Rank::Four], &[Rank::Ace, Rank::Two]),
+                true,
+            ),
+            compare_case(
+                "airplane with singles ignores larger wings",
+                airplane_with_singles(&[Rank::Three, Rank::Four], &[Rank::Ace, Rank::Two]),
+                airplane_with_singles(&[Rank::Five, Rank::Six], &[Rank::Seven, Rank::Eight]),
+                false,
+            ),
+            compare_case(
+                "airplane with singles same triple sequence ignores wings",
+                airplane_with_singles(&[Rank::Five, Rank::Six], &[Rank::Ace, Rank::Two]),
+                airplane_with_singles(&[Rank::Five, Rank::Six], &[Rank::Three, Rank::Four]),
+                false,
+            ),
+            compare_case(
+                "airplane with pairs compares triple sequence",
+                airplane_with_pairs(&[Rank::Five, Rank::Six], &[Rank::Three, Rank::Four]),
+                airplane_with_pairs(&[Rank::Three, Rank::Four], &[Rank::Ace, Rank::Two]),
+                true,
+            ),
+            compare_case(
+                "airplane with pairs ignores larger wing pairs",
+                airplane_with_pairs(&[Rank::Three, Rank::Four], &[Rank::Ace, Rank::Two]),
+                airplane_with_pairs(&[Rank::Five, Rank::Six], &[Rank::Seven, Rank::Eight]),
+                false,
+            ),
+            compare_case(
+                "airplane with singles cannot beat airplane with pairs",
+                airplane_with_singles(&[Rank::King, Rank::Ace], &[Rank::Three, Rank::Four]),
+                airplane_with_pairs(&[Rank::Three, Rank::Four], &[Rank::Five, Rank::Six]),
+                false,
+            ),
+            compare_case(
+                "airplane with pairs cannot beat airplane with singles",
+                airplane_with_pairs(&[Rank::King, Rank::Ace], &[Rank::Three, Rank::Four]),
+                airplane_with_singles(&[Rank::Three, Rank::Four], &[Rank::Five, Rank::Six]),
+                false,
+            ),
+        ]);
+
+        cases
+    }
+
+    fn compare_case(
+        name: impl Into<String>,
+        candidate: Vec<Card>,
+        previous: Vec<Card>,
+        expected: bool,
+    ) -> ComparisonCase {
+        ComparisonCase {
+            name: name.into(),
+            candidate,
+            previous,
+            expected,
+        }
+    }
+
+    fn single(rank: Rank) -> Vec<Card> {
+        match rank {
+            Rank::BlackJoker | Rank::RedJoker => vec![Card::joker(rank)],
+            _ => vec![card(rank, Suit::Clubs)],
+        }
+    }
+
+    fn pair(rank: Rank) -> Vec<Card> {
+        vec![card(rank, Suit::Clubs), card(rank, Suit::Diamonds)]
+    }
+
+    fn triple(rank: Rank) -> Vec<Card> {
+        vec![
+            card(rank, Suit::Clubs),
+            card(rank, Suit::Diamonds),
+            card(rank, Suit::Hearts),
+        ]
+    }
+
+    fn bomb(rank: Rank) -> Vec<Card> {
+        vec![
+            card(rank, Suit::Clubs),
+            card(rank, Suit::Diamonds),
+            card(rank, Suit::Hearts),
+            card(rank, Suit::Spades),
+        ]
+    }
+
+    fn rocket() -> Vec<Card> {
+        vec![Card::joker(Rank::BlackJoker), Card::joker(Rank::RedJoker)]
+    }
+
+    fn triple_with_single(triple_rank: Rank, single_rank: Rank) -> Vec<Card> {
+        let mut cards = triple(triple_rank);
+        cards.push(card(single_rank, Suit::Spades));
+        cards
+    }
+
+    fn triple_with_pair(triple_rank: Rank, pair_rank: Rank) -> Vec<Card> {
+        let mut cards = triple(triple_rank);
+        cards.extend(pair(pair_rank));
+        cards
+    }
+
+    fn straight(ranks: &[Rank]) -> Vec<Card> {
+        ranks
+            .iter()
+            .enumerate()
+            .map(|(index, rank)| match rank {
+                Rank::BlackJoker | Rank::RedJoker => Card::joker(*rank),
+                _ => card(*rank, suit_for_index(index)),
+            })
+            .collect()
+    }
+
+    fn serial_pairs(ranks: &[Rank]) -> Vec<Card> {
+        ranks.iter().flat_map(|rank| pair(*rank)).collect()
+    }
+
+    fn airplane(ranks: &[Rank]) -> Vec<Card> {
+        ranks.iter().flat_map(|rank| triple(*rank)).collect()
+    }
+
+    fn airplane_with_singles(triple_ranks: &[Rank], wing_ranks: &[Rank]) -> Vec<Card> {
+        let mut cards = airplane(triple_ranks);
+        for (index, rank) in wing_ranks.iter().enumerate() {
+            cards.push(card(*rank, suit_for_index(index)));
+        }
+        cards
+    }
+
+    fn airplane_with_pairs(triple_ranks: &[Rank], pair_ranks: &[Rank]) -> Vec<Card> {
+        let mut cards = airplane(triple_ranks);
+        for rank in pair_ranks {
+            cards.extend(pair(*rank));
+        }
+        cards
+    }
+
+    fn four_with_two_singles(quad_rank: Rank, single_ranks: &[Rank; 2]) -> Vec<Card> {
+        let mut cards = bomb(quad_rank);
+        for (index, rank) in single_ranks.iter().enumerate() {
+            cards.push(card(*rank, suit_for_index(index)));
+        }
+        cards
+    }
+
+    fn four_with_two_pairs(quad_rank: Rank, pair_ranks: &[Rank; 2]) -> Vec<Card> {
+        let mut cards = bomb(quad_rank);
+        for rank in pair_ranks {
+            cards.extend(pair(*rank));
+        }
+        cards
+    }
+
+    fn suit_for_index(index: usize) -> Suit {
+        [Suit::Clubs, Suit::Diamonds, Suit::Hearts, Suit::Spades][index % 4]
     }
 }
