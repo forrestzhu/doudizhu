@@ -1,7 +1,7 @@
 use doudizhu::harness::run_session_after_steps_with_config;
 use doudizhu::harness::{
-    run_deal, run_random_tournament, run_scenario_file, run_seeded_games_with_landlord_policy,
-    run_trace_with_landlord_policy, LandlordPolicy,
+    run_deal, run_random_tournament, run_random_tournament_from_source, run_scenario_file,
+    run_seeded_games_with_landlord_policy, run_trace_with_landlord_policy, LandlordPolicy,
 };
 use doudizhu::{RuleBasedPolicyConfig, StrategicPolicyConfig};
 use std::path::Path;
@@ -13,7 +13,7 @@ fn main() {
     let max_turns = read_usize_arg(&args, "--max-turns").unwrap_or(1_000);
     let format = read_arg(&args, "--format").unwrap_or("text");
     let significance_threshold = read_f64_arg(&args, "--significance").unwrap_or(0.10);
-    let strategy_config = read_arg(&args, "--strategy-file")
+    let mut strategy_config = read_arg(&args, "--strategy-file")
         .map(read_strategy_config)
         .transpose()
         .unwrap_or_else(|error| {
@@ -21,6 +21,7 @@ fn main() {
             std::process::exit(2);
         })
         .unwrap_or_default();
+    apply_strategy_overrides(&args, &mut strategy_config);
     let policy_config = RuleBasedPolicyConfig {
         avoid_power_hands: !has_flag(&args, "--allow-power"),
     };
@@ -34,12 +35,22 @@ fn main() {
         .unwrap_or(LandlordPolicy::RuleBased);
 
     if has_flag(&args, "--random-tournament") {
-        let report =
+        let random_source = read_u64_arg(&args, "--random-source");
+        let report = if let Some(random_source) = random_source {
+            run_random_tournament_from_source(
+                random_source,
+                games,
+                max_turns,
+                strategy_config,
+                significance_threshold,
+            )
+        } else {
             run_random_tournament(games, max_turns, strategy_config, significance_threshold)
-                .unwrap_or_else(|error| {
-                    eprintln!("random tournament error={error:?}");
-                    std::process::exit(1);
-                });
+        }
+        .unwrap_or_else(|error| {
+            eprintln!("random tournament error={error:?}");
+            std::process::exit(1);
+        });
 
         if format == "json" {
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
@@ -244,4 +255,22 @@ fn read_strategy_config(path: &str) -> Result<StrategicPolicyConfig, String> {
         .map_err(|error| format!("failed to read strategy file {path}: {error}"))?;
     serde_json::from_str(&contents)
         .map_err(|error| format!("failed to parse strategy file {path}: {error}"))
+}
+
+fn apply_strategy_overrides(args: &[String], config: &mut StrategicPolicyConfig) {
+    if let Some(value) = read_usize_arg(args, "--endgame-search-limit") {
+        config.endgame_search_limit = value;
+    }
+    if let Some(value) = read_usize_arg(args, "--power-cost-normal") {
+        config.power_cost_normal = value;
+    }
+    if let Some(value) = read_usize_arg(args, "--power-cost-threat") {
+        config.power_cost_threat = value;
+    }
+    if has_flag(args, "--spend-power") {
+        config.avoid_power_hands = false;
+    }
+    if has_flag(args, "--prefer-short-leads") {
+        config.lead_longer_tiebreak = false;
+    }
 }

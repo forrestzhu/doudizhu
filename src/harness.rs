@@ -408,13 +408,28 @@ pub fn run_random_tournament(
     strategy: StrategicPolicyConfig,
     significance_threshold: f64,
 ) -> Result<RandomTournamentReport, HarnessError> {
+    run_random_tournament_from_source(
+        random_source(),
+        games,
+        max_turns,
+        strategy,
+        significance_threshold,
+    )
+}
+
+pub fn run_random_tournament_from_source(
+    random_source: u64,
+    games: usize,
+    max_turns: usize,
+    strategy: StrategicPolicyConfig,
+    significance_threshold: f64,
+) -> Result<RandomTournamentReport, HarnessError> {
     if games == 0 {
         return Err(HarnessError::InvalidScenario(
             "games must be greater than zero".to_string(),
         ));
     }
 
-    let random_source = random_source();
     let deal_seeds = random_deal_seeds(random_source, games);
     let baseline = run_policy_placement_games(
         &deal_seeds,

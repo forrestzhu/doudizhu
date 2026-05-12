@@ -405,7 +405,6 @@ fn choose_strategic_candidate(
     if candidates.is_empty() {
         return None;
     }
-
     let outside = outside_cards(view);
     let mut plan_cache = BTreeMap::new();
     candidates.sort_by_key(|hand| {
