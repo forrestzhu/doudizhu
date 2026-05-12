@@ -4,6 +4,7 @@ const state = {
   view: null,
   hint: null,
   autoplayTimer: null,
+  stepInFlight: false,
 };
 
 const elements = {
@@ -136,7 +137,11 @@ async function requestStep() {
   if (!state.view?.game_id) {
     return;
   }
+  if (state.stepInFlight) {
+    return;
+  }
 
+  state.stepInFlight = true;
   state.hint = null;
   setBusy(true, '执行中');
   try {
@@ -153,6 +158,7 @@ async function requestStep() {
     stopAutoplay();
     showError(error);
   } finally {
+    state.stepInFlight = false;
     setBusy(false);
   }
 }
@@ -170,7 +176,7 @@ function setAutoplay(enabled) {
   elements.autoplayToggle.checked = true;
   state.autoplayTimer = window.setInterval(() => {
     requestStep();
-  }, 700);
+  }, 200);
   requestStep();
 }
 

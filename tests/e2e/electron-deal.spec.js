@@ -116,6 +116,18 @@ test.describe('Electron auto-play table', () => {
     await page.locator('#autoplayToggle').uncheck();
   });
 
+  test('autoplay completes the seed 42 game', async () => {
+    await page.locator('#autoplayToggle').check();
+
+    await expect(page.locator('#winnerText')).toHaveText('胜者 玩家 0', {
+      timeout: 45_000,
+    });
+    await expect(page.locator('#autoplayToggle')).not.toBeChecked();
+    await expect(page.locator('#historyList .history-item')).toHaveCount(67);
+    await expect(page.locator('#player0 .card[aria-label]')).toHaveCount(0);
+    await expect(page.locator('#previousPlay')).toContainText('上一手：玩家 0 出牌 Single');
+  });
+
   test('redeals a different deterministic seed from the toolbar', async () => {
     await page.locator('#seedInput').fill('43');
     await page.getByRole('button', { name: '重新发牌' }).click();
