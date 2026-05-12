@@ -1,7 +1,9 @@
 use doudizhu::arena::run_session_after_steps_with_config;
 use doudizhu::arena::{
-    run_deal, run_random_tournament, run_random_tournament_from_source, run_scenario_file,
+    run_deal, run_random_tournament, run_random_tournament_from_source,
+    run_random_tournament_from_source_opt, run_scenario_file,
     run_seeded_games_with_landlord_policy, run_trace_with_landlord_policy, LandlordPolicy,
+    TournamentOptions,
 };
 use doudizhu::{RuleBasedPolicyConfig, StrategicPolicyConfig};
 use std::path::Path;
@@ -36,7 +38,41 @@ fn main() {
 
     if has_flag(&args, "--random-tournament") {
         let random_source = read_u64_arg(&args, "--random-source");
-        let report = if let Some(random_source) = random_source {
+        let num_threads = read_usize_arg(&args, "--threads").unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        });
+        let early_stop_games = read_usize_arg(&args, "--early-stop").unwrap_or(100);
+        let early_stop_regression = read_f64_arg(&args, "--early-stop-regression").unwrap_or(0.15);
+
+        let report = if num_threads > 1 || early_stop_games > 0 {
+            let opts = TournamentOptions {
+                num_threads,
+                pilot_games: early_stop_games,
+                early_stop_regression,
+            };
+            if let Some(random_source) = random_source {
+                run_random_tournament_from_source_opt(
+                    random_source,
+                    games,
+                    max_turns,
+                    strategy_config,
+                    significance_threshold,
+                    opts,
+                )
+            } else {
+                let random_source_val = doudizhu::arena::generate_random_source();
+                run_random_tournament_from_source_opt(
+                    random_source_val,
+                    games,
+                    max_turns,
+                    strategy_config,
+                    significance_threshold,
+                    opts,
+                )
+            }
+        } else if let Some(random_source) = random_source {
             run_random_tournament_from_source(
                 random_source,
                 games,
@@ -55,9 +91,17 @@ fn main() {
         if format == "json" {
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
         } else {
+            let early_flag = if report.early_stopped {
+                " EARLY_STOPPED"
+            } else {
+                ""
+            };
             println!(
-                "random_tournament games={} random_source={} significance={:.2}",
-                report.games, report.random_source, report.conclusion.significance_threshold
+                "random_tournament games={} random_source={} significance={:.2}{}",
+                report.games,
+                report.random_source,
+                report.conclusion.significance_threshold,
+                early_flag
             );
             for run in &report.runs {
                 println!(

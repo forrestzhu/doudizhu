@@ -10,10 +10,11 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
-pub enum HarnessError {
+pub enum ArenaError {
     Io(std::io::Error),
     Json(serde_json::Error),
     InvalidCard(String),
@@ -21,19 +22,19 @@ pub enum HarnessError {
     Game(GameError),
 }
 
-impl From<std::io::Error> for HarnessError {
+impl From<std::io::Error> for ArenaError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
     }
 }
 
-impl From<serde_json::Error> for HarnessError {
+impl From<serde_json::Error> for ArenaError {
     fn from(error: serde_json::Error) -> Self {
         Self::Json(error)
     }
 }
 
-impl From<GameError> for HarnessError {
+impl From<GameError> for ArenaError {
     fn from(error: GameError) -> Self {
         Self::Game(error)
     }
@@ -124,6 +125,26 @@ pub struct TournamentConclusion {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct TournamentOptions {
+    pub num_threads: usize,
+    pub pilot_games: usize,
+    pub early_stop_regression: f64,
+}
+
+impl Default for TournamentOptions {
+    fn default() -> Self {
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        Self {
+            num_threads,
+            pilot_games: 100,
+            early_stop_regression: 0.15,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct RandomTournamentReport {
     pub schema_version: String,
     pub deterministic: bool,
@@ -133,6 +154,7 @@ pub struct RandomTournamentReport {
     pub strategy: StrategicPolicyConfig,
     pub runs: Vec<TournamentRunReport>,
     pub conclusion: TournamentConclusion,
+    pub early_stopped: bool,
 }
 
 impl LandlordPolicy {
@@ -300,12 +322,12 @@ fn one_game() -> usize {
     1
 }
 
-pub fn run_scenario_file(path: &Path) -> Result<ScenarioReport, HarnessError> {
+pub fn run_scenario_file(path: &Path) -> Result<ScenarioReport, ArenaError> {
     let contents = std::fs::read_to_string(path)?;
     run_scenario_str(&contents)
 }
 
-pub fn run_scenario_str(contents: &str) -> Result<ScenarioReport, HarnessError> {
+pub fn run_scenario_str(contents: &str) -> Result<ScenarioReport, ArenaError> {
     let scenario: Scenario = serde_json::from_str(contents)?;
     match scenario {
         Scenario::LegalCandidates {
@@ -334,7 +356,7 @@ pub fn run_seeded_games(
     seed: u64,
     games: usize,
     max_turns: usize,
-) -> Result<SeededRunReport, HarnessError> {
+) -> Result<SeededRunReport, ArenaError> {
     run_seeded_games_with_landlord_policy(seed, games, max_turns, LandlordPolicy::RuleBased)
 }
 
@@ -343,9 +365,9 @@ pub fn run_seeded_games_with_landlord_policy(
     games: usize,
     max_turns: usize,
     landlord_policy: LandlordPolicy,
-) -> Result<SeededRunReport, HarnessError> {
+) -> Result<SeededRunReport, ArenaError> {
     if games == 0 {
-        return Err(HarnessError::InvalidScenario(
+        return Err(ArenaError::InvalidScenario(
             "games must be greater than zero".to_string(),
         ));
     }
@@ -407,7 +429,7 @@ pub fn run_random_tournament(
     max_turns: usize,
     strategy: StrategicPolicyConfig,
     significance_threshold: f64,
-) -> Result<RandomTournamentReport, HarnessError> {
+) -> Result<RandomTournamentReport, ArenaError> {
     run_random_tournament_from_source(
         random_source(),
         games,
@@ -423,9 +445,9 @@ pub fn run_random_tournament_from_source(
     max_turns: usize,
     strategy: StrategicPolicyConfig,
     significance_threshold: f64,
-) -> Result<RandomTournamentReport, HarnessError> {
+) -> Result<RandomTournamentReport, ArenaError> {
     if games == 0 {
-        return Err(HarnessError::InvalidScenario(
+        return Err(ArenaError::InvalidScenario(
             "games must be greater than zero".to_string(),
         ));
     }
@@ -469,6 +491,7 @@ pub fn run_random_tournament_from_source(
             landlord_strategic_significant: landlord_strategic_delta >= significance_threshold,
             farmers_strategic_significant: farmers_strategic_delta >= significance_threshold,
         },
+        early_stopped: false,
     })
 }
 
@@ -477,7 +500,7 @@ fn run_policy_placement_games(
     max_turns: usize,
     placement: PolicyPlacement,
     strategy: StrategicPolicyConfig,
-) -> Result<TournamentRunReport, HarnessError> {
+) -> Result<TournamentRunReport, ArenaError> {
     let mut wins = vec![0usize; 3];
     let mut reports = Vec::with_capacity(deal_seeds.len());
     let mut total_turns = 0usize;
@@ -533,7 +556,262 @@ fn run_policy_placement_games(
     })
 }
 
+fn run_policy_placement_games_parallel(
+    deal_seeds: &[u64],
+    max_turns: usize,
+    placement: PolicyPlacement,
+    strategy: StrategicPolicyConfig,
+    num_threads: usize,
+) -> Result<TournamentRunReport, ArenaError> {
+    if deal_seeds.is_empty() {
+        return Ok(TournamentRunReport {
+            placement: placement.name().to_string(),
+            games: 0,
+            wins: vec![0; 3],
+            landlord_win_rate: 0.0,
+            farmer_win_rate: 0.0,
+            avg_turns: 0.0,
+            reports: Vec::new(),
+        });
+    }
+
+    let rule_config = RuleBasedPolicyConfig::default();
+    let chunk_size = deal_seeds.len().div_ceil(num_threads);
+
+    let thread_results = thread::scope(|s| {
+        deal_seeds
+            .chunks(chunk_size)
+            .enumerate()
+            .map(|(thread_idx, chunk)| {
+                let start_index = thread_idx * chunk_size;
+                s.spawn(move || {
+                    let mut wins = vec![0usize; 3];
+                    let mut total_turns = 0usize;
+                    let mut reports = Vec::with_capacity(chunk.len());
+
+                    for (i, game_seed) in chunk.iter().copied().enumerate() {
+                        let game_index = start_index + i + 1;
+                        let deal = Deal::from_seed(game_seed, 3);
+                        let config = GameConfig {
+                            max_turns,
+                            ..GameConfig::default()
+                        };
+                        let mut game = Game::new(deal, config).expect("valid deal");
+                        let mut policies = placement_policies(placement, rule_config, strategy);
+
+                        match game.run(&mut policies) {
+                            Ok(outcome) => {
+                                wins[outcome.winner.0] += 1;
+                                total_turns += outcome.turns;
+                                reports.push(SeededGameReport {
+                                    game: game_index,
+                                    seed: game_seed,
+                                    winner: Some(outcome.winner.0),
+                                    turns: outcome.turns,
+                                    history_hash: history_hash(game.history()),
+                                    error: None,
+                                });
+                            }
+                            Err(error) => {
+                                reports.push(SeededGameReport {
+                                    game: game_index,
+                                    seed: game_seed,
+                                    winner: None,
+                                    turns: game.history().len(),
+                                    history_hash: history_hash(game.history()),
+                                    error: Some(format!("{error:?}")),
+                                });
+                            }
+                        }
+                    }
+
+                    (wins, total_turns, reports)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+
+    let mut all_wins = vec![0usize; 3];
+    let mut all_total_turns = 0usize;
+    let mut all_reports = Vec::with_capacity(deal_seeds.len());
+
+    for (wins, total_turns, reports) in thread_results {
+        for i in 0..3 {
+            all_wins[i] += wins[i];
+        }
+        all_total_turns += total_turns;
+        all_reports.extend(reports);
+    }
+
+    all_reports.sort_by_key(|r| r.game);
+
+    let games = deal_seeds.len();
+    let landlord_win_rate = all_wins[0] as f64 / games as f64;
+    let farmer_win_rate = (all_wins[1] + all_wins[2]) as f64 / games as f64;
+
+    Ok(TournamentRunReport {
+        placement: placement.name().to_string(),
+        games,
+        wins: all_wins,
+        landlord_win_rate,
+        farmer_win_rate,
+        avg_turns: all_total_turns as f64 / games as f64,
+        reports: all_reports,
+    })
+}
+
+fn merge_run_reports(a: &TournamentRunReport, b: &TournamentRunReport) -> TournamentRunReport {
+    let games = a.games + b.games;
+    let wins: Vec<usize> = a.wins.iter().zip(&b.wins).map(|(x, y)| x + y).collect();
+    let total_turns = (a.avg_turns * a.games as f64 + b.avg_turns * b.games as f64) as usize;
+    let mut reports = a.reports.clone();
+    for r in &b.reports {
+        reports.push(SeededGameReport {
+            game: r.game + a.games,
+            ..r.clone()
+        });
+    }
+
+    TournamentRunReport {
+        placement: a.placement.clone(),
+        games,
+        wins: wins.clone(),
+        landlord_win_rate: wins[0] as f64 / games as f64,
+        farmer_win_rate: (wins[1] + wins[2]) as f64 / games as f64,
+        avg_turns: total_turns as f64 / games as f64,
+        reports,
+    }
+}
+
+pub fn run_random_tournament_from_source_opt(
+    random_source: u64,
+    games: usize,
+    max_turns: usize,
+    strategy: StrategicPolicyConfig,
+    significance_threshold: f64,
+    options: TournamentOptions,
+) -> Result<RandomTournamentReport, ArenaError> {
+    if games == 0 {
+        return Err(ArenaError::InvalidScenario(
+            "games must be greater than zero".to_string(),
+        ));
+    }
+
+    let deal_seeds = random_deal_seeds(random_source, games);
+    let num_threads = options.num_threads.max(1);
+    let run_fn = |seeds: &[u64],
+                  placement: PolicyPlacement|
+     -> Result<TournamentRunReport, ArenaError> {
+        if num_threads == 1 {
+            run_policy_placement_games(seeds, max_turns, placement, strategy)
+        } else {
+            run_policy_placement_games_parallel(seeds, max_turns, placement, strategy, num_threads)
+        }
+    };
+
+    let pilot_games = options.pilot_games.min(games);
+    let early_stop = pilot_games > 0 && pilot_games < games && options.early_stop_regression > 0.0;
+
+    if !early_stop {
+        let baseline = run_fn(&deal_seeds, PolicyPlacement::AllRuleBased)?;
+        let landlord_strategic = run_fn(&deal_seeds, PolicyPlacement::LandlordStrategic)?;
+        let farmers_strategic = run_fn(&deal_seeds, PolicyPlacement::FarmersStrategic)?;
+
+        let landlord_strategic_delta =
+            landlord_strategic.landlord_win_rate - baseline.landlord_win_rate;
+        let farmers_strategic_delta = farmers_strategic.farmer_win_rate - baseline.farmer_win_rate;
+
+        return Ok(RandomTournamentReport {
+            schema_version: "2026-05-11".to_string(),
+            deterministic: false,
+            random_source,
+            games,
+            deal_seeds,
+            strategy,
+            runs: vec![baseline, landlord_strategic, farmers_strategic],
+            conclusion: TournamentConclusion {
+                significance_threshold,
+                landlord_strategic_delta,
+                farmers_strategic_delta,
+                landlord_strategic_significant: landlord_strategic_delta >= significance_threshold,
+                farmers_strategic_significant: farmers_strategic_delta >= significance_threshold,
+            },
+            early_stopped: false,
+        });
+    }
+
+    let (pilot_seeds, rest_seeds) = deal_seeds.split_at(pilot_games);
+
+    let baseline_pilot = run_fn(pilot_seeds, PolicyPlacement::AllRuleBased)?;
+    let landlord_pilot = run_fn(pilot_seeds, PolicyPlacement::LandlordStrategic)?;
+    let farmers_pilot = run_fn(pilot_seeds, PolicyPlacement::FarmersStrategic)?;
+
+    let landlord_regression = baseline_pilot.landlord_win_rate - landlord_pilot.landlord_win_rate;
+    let farmers_regression = baseline_pilot.farmer_win_rate - farmers_pilot.farmer_win_rate;
+
+    if landlord_regression > options.early_stop_regression
+        && farmers_regression > options.early_stop_regression
+    {
+        let landlord_delta = landlord_pilot.landlord_win_rate - baseline_pilot.landlord_win_rate;
+        let farmers_delta = farmers_pilot.farmer_win_rate - baseline_pilot.farmer_win_rate;
+        return Ok(RandomTournamentReport {
+            schema_version: "2026-05-11".to_string(),
+            deterministic: false,
+            random_source,
+            games: pilot_games,
+            deal_seeds: pilot_seeds.to_vec(),
+            strategy,
+            runs: vec![baseline_pilot, landlord_pilot, farmers_pilot],
+            conclusion: TournamentConclusion {
+                significance_threshold,
+                landlord_strategic_delta: landlord_delta,
+                farmers_strategic_delta: farmers_delta,
+                landlord_strategic_significant: false,
+                farmers_strategic_significant: false,
+            },
+            early_stopped: true,
+        });
+    }
+
+    let baseline_rest = run_fn(rest_seeds, PolicyPlacement::AllRuleBased)?;
+    let landlord_rest = run_fn(rest_seeds, PolicyPlacement::LandlordStrategic)?;
+    let farmers_rest = run_fn(rest_seeds, PolicyPlacement::FarmersStrategic)?;
+
+    let baseline = merge_run_reports(&baseline_pilot, &baseline_rest);
+    let landlord_strategic = merge_run_reports(&landlord_pilot, &landlord_rest);
+    let farmers_strategic = merge_run_reports(&farmers_pilot, &farmers_rest);
+
+    let landlord_strategic_delta =
+        landlord_strategic.landlord_win_rate - baseline.landlord_win_rate;
+    let farmers_strategic_delta = farmers_strategic.farmer_win_rate - baseline.farmer_win_rate;
+
+    Ok(RandomTournamentReport {
+        schema_version: "2026-05-11".to_string(),
+        deterministic: false,
+        random_source,
+        games,
+        deal_seeds,
+        strategy,
+        runs: vec![baseline, landlord_strategic, farmers_strategic],
+        conclusion: TournamentConclusion {
+            significance_threshold,
+            landlord_strategic_delta,
+            farmers_strategic_delta,
+            landlord_strategic_significant: landlord_strategic_delta >= significance_threshold,
+            farmers_strategic_significant: farmers_strategic_delta >= significance_threshold,
+        },
+        early_stopped: false,
+    })
+}
+
 fn random_source() -> u64 {
+    generate_random_source()
+}
+
+pub fn generate_random_source() -> u64 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -551,12 +829,12 @@ fn random_deal_seeds(mut state: u64, games: usize) -> Vec<u64> {
         .collect()
 }
 
-pub fn run_deal(seed: u64, viewer: usize) -> Result<DealReport, HarnessError> {
+pub fn run_deal(seed: u64, viewer: usize) -> Result<DealReport, ArenaError> {
     let deal = Deal::from_seed(seed, 3);
     let bottom_cards = card_strings(&deal.bottom_cards);
     let game = Game::new(deal, GameConfig::default())?;
     if viewer >= 3 {
-        return Err(HarnessError::InvalidScenario(format!(
+        return Err(ArenaError::InvalidScenario(format!(
             "viewer {viewer} is outside the 3-player game"
         )));
     }
@@ -593,7 +871,7 @@ pub fn run_deal(seed: u64, viewer: usize) -> Result<DealReport, HarnessError> {
     })
 }
 
-pub fn run_session(seed: u64, viewer: usize) -> Result<SessionReport, HarnessError> {
+pub fn run_session(seed: u64, viewer: usize) -> Result<SessionReport, ArenaError> {
     run_session_after_steps(seed, viewer, 0, 1_000)
 }
 
@@ -602,7 +880,7 @@ pub fn run_session_after_steps(
     viewer: usize,
     steps: usize,
     max_turns: usize,
-) -> Result<SessionReport, HarnessError> {
+) -> Result<SessionReport, ArenaError> {
     run_session_after_steps_with_config(
         seed,
         viewer,
@@ -618,7 +896,7 @@ pub fn run_session_after_steps_with_config(
     steps: usize,
     max_turns: usize,
     policy_config: RuleBasedPolicyConfig,
-) -> Result<SessionReport, HarnessError> {
+) -> Result<SessionReport, ArenaError> {
     let deal = Deal::from_seed(seed, 3);
     let config = GameConfig {
         max_turns,
@@ -643,7 +921,7 @@ pub fn run_session_after_steps_with_config(
     })
 }
 
-pub fn run_trace(seed: u64, max_turns: usize) -> Result<EpisodeReport, HarnessError> {
+pub fn run_trace(seed: u64, max_turns: usize) -> Result<EpisodeReport, ArenaError> {
     run_trace_with_config(seed, max_turns, RuleBasedPolicyConfig::default())
 }
 
@@ -651,7 +929,7 @@ pub fn run_trace_with_config(
     seed: u64,
     max_turns: usize,
     policy_config: RuleBasedPolicyConfig,
-) -> Result<EpisodeReport, HarnessError> {
+) -> Result<EpisodeReport, ArenaError> {
     run_trace_with_landlord_policy(seed, max_turns, policy_config, LandlordPolicy::RuleBased)
 }
 
@@ -660,7 +938,7 @@ pub fn run_trace_with_landlord_policy(
     max_turns: usize,
     policy_config: RuleBasedPolicyConfig,
     landlord_policy: LandlordPolicy,
-) -> Result<EpisodeReport, HarnessError> {
+) -> Result<EpisodeReport, ArenaError> {
     let deal = Deal::from_seed(seed, 3);
     let initial_hands = deal.hands.iter().map(|hand| card_strings(hand)).collect();
     let bottom_cards = card_strings(&deal.bottom_cards);
@@ -694,7 +972,7 @@ fn run_legal_candidates_scenario(
     hand: Vec<String>,
     previous_play: Option<Vec<String>>,
     expect: LegalCandidatesExpect,
-) -> Result<ScenarioReport, HarnessError> {
+) -> Result<ScenarioReport, ArenaError> {
     let hand = parse_cards(&hand)?;
     let rules = BasicRules;
     let previous = previous_play
@@ -702,7 +980,7 @@ fn run_legal_candidates_scenario(
         .map(|cards| {
             let cards = parse_cards(cards)?;
             rules.classify(&cards).ok_or_else(|| {
-                HarnessError::InvalidScenario("previous_play is not a legal hand".to_string())
+                ArenaError::InvalidScenario("previous_play is not a legal hand".to_string())
             })
         })
         .transpose()?;
@@ -753,7 +1031,7 @@ fn run_visibility_scenario(
     hands: Vec<Vec<String>>,
     viewer: usize,
     expect: VisibilityExpect,
-) -> Result<ScenarioReport, HarnessError> {
+) -> Result<ScenarioReport, ArenaError> {
     let hands = hands
         .iter()
         .map(|hand| parse_cards(hand))
@@ -805,7 +1083,7 @@ fn run_self_play_scenario(
     games: usize,
     max_turns: usize,
     expect: SelfPlayExpect,
-) -> Result<ScenarioReport, HarnessError> {
+) -> Result<ScenarioReport, ArenaError> {
     let seeded = run_seeded_games(seed, games, max_turns)?;
     let mut checks = vec![CheckReport {
         id: "all_games_completed".to_string(),
@@ -920,7 +1198,7 @@ fn policy_reports_with_landlord(
         .collect()
 }
 
-fn game_view_report(game: &Game, seed: u64, viewer: usize) -> Result<GameViewReport, HarnessError> {
+fn game_view_report(game: &Game, seed: u64, viewer: usize) -> Result<GameViewReport, ArenaError> {
     let view = game.player_view_checked(PlayerId(viewer))?;
     let players = view
         .hand_counts
@@ -959,7 +1237,7 @@ fn game_view_report(game: &Game, seed: u64, viewer: usize) -> Result<GameViewRep
     })
 }
 
-fn hint_report(game: &Game, seed: u64, viewer: usize) -> Result<HintReport, HarnessError> {
+fn hint_report(game: &Game, seed: u64, viewer: usize) -> Result<HintReport, ArenaError> {
     let view = game.player_view_checked(PlayerId(viewer))?;
     let hints = legal_candidates(&view.hand, view.previous_play.as_ref(), game.rules());
     let legal_hints: Vec<Vec<String>> =
@@ -1023,10 +1301,10 @@ fn role_name(id: usize) -> String {
     }
 }
 
-fn parse_cards(values: &[String]) -> Result<Vec<Card>, HarnessError> {
+fn parse_cards(values: &[String]) -> Result<Vec<Card>, ArenaError> {
     values
         .iter()
-        .map(|value| Card::from_str(value).map_err(HarnessError::InvalidCard))
+        .map(|value| Card::from_str(value).map_err(ArenaError::InvalidCard))
         .collect::<Result<Vec<_>, _>>()
         .map(normalize_cards)
 }
@@ -1073,13 +1351,13 @@ fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use crate::arena::{
+        run_deal, run_scenario_str, run_seeded_games_with_landlord_policy, run_session,
+        run_session_after_steps, run_trace, run_trace_with_config, ArenaError, LandlordPolicy,
+    };
     use crate::cards::{Card, Rank, Suit};
     use crate::decision::{RuleBasedPolicyConfig, StrategicPolicyConfig};
     use crate::engine::Deal;
-    use crate::harness::{
-        run_deal, run_scenario_str, run_seeded_games_with_landlord_policy, run_session,
-        run_session_after_steps, run_trace, run_trace_with_config, HarnessError, LandlordPolicy,
-    };
     use crate::rules::{BasicRules, RuleSet};
     use std::str::FromStr;
 
@@ -1196,7 +1474,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(error, HarnessError::InvalidCard(_)));
+        assert!(matches!(error, ArenaError::InvalidCard(_)));
     }
 
     #[test]
@@ -1229,7 +1507,7 @@ mod tests {
     fn deal_report_rejects_invalid_viewer() {
         let error = run_deal(42, 3).unwrap_err();
 
-        assert!(matches!(error, HarnessError::InvalidScenario(_)));
+        assert!(matches!(error, ArenaError::InvalidScenario(_)));
     }
 
     #[test]

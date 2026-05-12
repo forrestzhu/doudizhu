@@ -45,35 +45,51 @@ and `deal_seeds` in JSON so runs can be reproduced.
 
 ## Commands
 
-Fresh random 100-game tournament:
+Use `--release` for benchmarking. Parallel 1000-game tournament (~33s on 12 cores):
 
 ```sh
-cargo run --quiet --bin arena -- \
+cargo run --release --quiet --bin arena -- \
   --random-tournament \
-  --games 100 \
-  --strategy-file strategies/strategic_v2.json \
+  --games 1000 \
+  --threads 12 \
+  --strategy-file strategies/strategic_v3.json \
+  --format json
+```
+
+With early termination (stops at pilot games if both roles regress by threshold):
+
+```sh
+cargo run --release --quiet --bin arena -- \
+  --random-tournament \
+  --games 1000 \
+  --threads 12 \
+  --early-stop 100 \
+  --early-stop-regression 0.15 \
+  --strategy-file strategies/strategic_v3.json \
   --format json
 ```
 
 Reproduce a specific random tournament:
 
 ```sh
-cargo run --quiet --bin arena -- \
+cargo run --release --quiet --bin arena -- \
   --random-tournament \
-  --games 100 \
+  --games 1000 \
+  --threads 12 \
   --random-source <RANDOM_SOURCE> \
-  --strategy-file strategies/strategic_v2.json \
+  --strategy-file strategies/strategic_v3.json \
   --format json
 ```
 
 Quickly test parameter overrides without editing a strategy file:
 
 ```sh
-cargo run --quiet --bin arena -- \
+cargo run --release --quiet --bin arena -- \
   --random-tournament \
-  --games 100 \
+  --games 1000 \
+  --threads 12 \
   --random-source <RANDOM_SOURCE> \
-  --strategy-file strategies/strategic_v2.json \
+  --strategy-file strategies/strategic_v3.json \
   --endgame-search-limit 8 \
   --power-cost-normal 2 \
   --power-cost-threat 0 \
@@ -99,13 +115,16 @@ For the first strategic policy, use a clear threshold against `all_rule_based`:
 For iterative versions after `strategic_v2`, compare candidate against the
 current champion on the same `random_source` batches:
 
-- Run at least three independent 100-game random-source batches.
+- Run at least three independent 1000-game random-source batches (with
+  `--threads 12 --release` for speed).
 - Do not accept a role-side regression greater than 2 percentage points on any
   batch.
 - Prefer candidates that improve either landlord or farmer placement by at least
   2 percentage points on average across the batches.
 - If the behavior change is broad or risky, require a 10 percentage point gain
   against `all_rule_based` to remain true on the same batches.
+- Use `--early-stop 100 --early-stop-regression 0.15` to quickly reject clearly
+  worse candidates without waiting for the full 1000-game run.
 
 When a candidate passes the promotion rule:
 
