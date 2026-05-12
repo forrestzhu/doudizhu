@@ -1,5 +1,5 @@
-use doudizhu::harness::run_session_after_steps_with_config;
-use doudizhu::harness::{
+use doudizhu::arena::run_session_after_steps_with_config;
+use doudizhu::arena::{
     run_deal, run_random_tournament, run_random_tournament_from_source, run_scenario_file,
     run_seeded_games_with_landlord_policy, run_trace_with_landlord_policy, LandlordPolicy,
 };
@@ -207,7 +207,7 @@ fn parse_landlord_policy(value: &str) -> Result<LandlordPolicy, String> {
     }
 }
 
-fn print_deal_report(report: &doudizhu::harness::DealReport) {
+fn print_deal_report(report: &doudizhu::arena::DealReport) {
     println!("deal seed={} viewer={}", report.seed, report.viewer);
     println!("bottom_cards={:?}", report.bottom_cards);
     for player in &report.players {
@@ -218,7 +218,7 @@ fn print_deal_report(report: &doudizhu::harness::DealReport) {
     }
 }
 
-fn print_scenario_report(report: &doudizhu::harness::ScenarioReport) {
+fn print_scenario_report(report: &doudizhu::arena::ScenarioReport) {
     println!(
         "scenario={} kind={} pass={}",
         report.name, report.kind, report.pass
@@ -266,6 +266,12 @@ fn apply_strategy_overrides(args: &[String], config: &mut StrategicPolicyConfig)
     }
     if let Some(value) = read_usize_arg(args, "--power-cost-threat") {
         config.power_cost_threat = value;
+    }
+    if let Some(value) = read_usize_arg(args, "--stranded-risk-weight") {
+        config.stranded_risk_weight = value;
+    }
+    if let Some(value) = read_usize_arg(args, "--opponent-urgency-weight") {
+        config.opponent_urgency_weight = value;
     }
     if has_flag(args, "--spend-power") {
         config.avoid_power_hands = false;

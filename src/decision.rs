@@ -94,6 +94,10 @@ pub struct StrategicPolicyConfig {
     pub lead_longer_tiebreak: bool,
     #[serde(default = "default_lead_tempo_plan_weight")]
     pub lead_tempo_plan_weight: usize,
+    #[serde(default = "default_one")]
+    pub stranded_risk_weight: usize,
+    #[serde(default = "default_one")]
+    pub opponent_urgency_weight: usize,
 }
 
 impl Default for StrategicPolicyConfig {
@@ -105,11 +109,17 @@ impl Default for StrategicPolicyConfig {
             power_cost_threat: 1,
             lead_longer_tiebreak: true,
             lead_tempo_plan_weight: default_lead_tempo_plan_weight(),
+            stranded_risk_weight: default_one(),
+            opponent_urgency_weight: default_one(),
         }
     }
 }
 
 fn default_lead_tempo_plan_weight() -> usize {
+    1
+}
+
+fn default_one() -> usize {
     1
 }
 
@@ -419,8 +429,8 @@ fn choose_strategic_candidate(
         let winning = !remaining.is_empty();
         let plan_turns = estimated_play_count_cached(&remaining, rules, &mut plan_cache, config);
         let control = immediate_threat_control_risk(hand, &outside, view);
-        let stranded = stranded_single_risk(&remaining, &outside);
-        let threat = opponent_threat_risk(hand, &remaining, view);
+        let stranded = stranded_single_risk(&remaining, &outside) * config.stranded_risk_weight;
+        let threat = opponent_threat_risk(hand, &remaining, view) * config.opponent_urgency_weight;
         let power_cost = strategic_power_cost(hand, &remaining, view, config);
         let tempo_score = if view.previous_play.is_none() {
             (plan_turns + control + stranded + threat + power_cost) * config.lead_tempo_plan_weight
@@ -519,7 +529,9 @@ fn estimated_play_count_greedy(hand: &[Card], rules: &dyn RuleSet) -> usize {
 
     while !remaining.is_empty() {
         let candidates = legal_candidates(&remaining, None, rules);
-        let Some(best) = candidates.into_iter().max_by_key(plan_candidate_value) else {
+        let Some(best) = candidates.into_iter().max_by_key(|hand| {
+            plan_candidate_value(hand, &remaining_after(&remaining, &hand.cards))
+        }) else {
             return turns + remaining.len();
         };
         remaining = remaining_after(&remaining, &best.cards);
@@ -529,12 +541,25 @@ fn estimated_play_count_greedy(hand: &[Card], rules: &dyn RuleSet) -> usize {
     turns
 }
 
-fn plan_candidate_value(hand: &ClassifiedHand) -> (usize, u8, usize, u8) {
+fn plan_candidate_value(
+    hand: &ClassifiedHand,
+    remaining: &[Card],
+) -> (usize, u8, usize, u8, usize) {
+    let remaining_groups = grouped_by_rank(remaining)
+        .values()
+        .map(|cards| match cards.len() {
+            4 => 4,
+            3 => 3,
+            2 => 2,
+            _ => 0,
+        })
+        .sum::<usize>();
     (
         hand.cards.len(),
         shape_priority(hand.kind),
         usize::from(is_power_hand(hand)),
         hand.strength,
+        usize::MAX - remaining_groups,
     )
 }
 

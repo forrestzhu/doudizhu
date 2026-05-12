@@ -24,7 +24,7 @@ Use `strategies/strategic_v2.json` as the current best strategic policy.
 Relevant commits:
 
 - `3028676 feat(decision): add strategic policy tournament`
-- `ee45b34 chore(harness): add strategy tuning controls`
+- `ee45b34 chore(arena): add strategy tuning controls`
 - `f1b8034 feat(decision): add strategic policy v2`
 
 ## Evaluation Goal
@@ -37,7 +37,7 @@ Evaluate three placements on the same random deal set:
 3. `farmers_strategic`: farmers use the candidate strategy, landlord uses the
    default rule-based policy.
 
-The harness generates random deal seeds by default, but records `random_source`
+The arena generates random deal seeds by default, but records `random_source`
 and `deal_seeds` in JSON so runs can be reproduced.
 
 ## Commands
@@ -45,7 +45,7 @@ and `deal_seeds` in JSON so runs can be reproduced.
 Fresh random 100-game tournament:
 
 ```sh
-cargo run --quiet --bin harness -- \
+cargo run --quiet --bin arena -- \
   --random-tournament \
   --games 100 \
   --strategy-file strategies/strategic_v2.json \
@@ -55,7 +55,7 @@ cargo run --quiet --bin harness -- \
 Reproduce a specific random tournament:
 
 ```sh
-cargo run --quiet --bin harness -- \
+cargo run --quiet --bin arena -- \
   --random-tournament \
   --games 100 \
   --random-source <RANDOM_SOURCE> \
@@ -66,7 +66,7 @@ cargo run --quiet --bin harness -- \
 Quickly test parameter overrides without editing a strategy file:
 
 ```sh
-cargo run --quiet --bin harness -- \
+cargo run --quiet --bin arena -- \
   --random-tournament \
   --games 100 \
   --random-source <RANDOM_SOURCE> \
@@ -156,17 +156,31 @@ These were tested and should not be reintroduced without a new reason:
 - Increasing endgame search from 10 to 12 cards gave no win-rate improvement and
   made evaluation much slower.
 - Removing long-lead preference (`--prefer-short-leads`) materially hurt results.
+- `remaining_group_penalty` penalizing plays that break pairs/triples: improved
+  landlord by ~2pp but hurt farmer by 3-5pp per batch (too conservative).
+- `response_strength_weight` adding strength cost when responding: hurt farmer
+  by 6-8pp per batch (made farmers too passive, landlord runs unchecked).
+- Weight tuning (stranded_risk_weight 2x, opponent_urgency_weight 2x, both 2x):
+  all within ±1pp noise, no significant improvement.
+- Power cost tuning (pcn=2-4, pct=0): within ±1pp noise. Bomb decisions are
+  already correct in most game situations.
 
 ## Current Next Step
 
-Continue from `strategic_v2.json`. Suggested next candidates:
+Continue from `strategic_v2.json`. Weight tuning and scoring penalties tested in
+this session were within ±1pp noise. The v2 strategy appears near a local optimum
+for the current heuristic scoring approach.
 
-- Add a configurable weight for `stranded_single_risk` instead of changing its
-  formula outright.
-- Evaluate role-aware endgame risk only for true opponents, then compare across
-  three random-source batches before keeping it.
-- Explore candidate ordering for attachment hands so triples and airplanes use
-  low-value kickers without damaging pairs unnecessarily.
+Suggested directions for future sessions:
+
+- 2-ply minimax: consider opponent responses when evaluating plays
+- Opponent card modeling: track revealed cards across history for better outside_cards
+- Adaptive strategy: different scoring weights based on game phase (early/mid/late)
+- Learned evaluation: replace hand-crafted scoring with ML model
+
+Infrastructure improvements available for future tuning:
+- `--stranded-risk-weight` and `--opponent-urgency-weight` CLI overrides
+- Improved greedy endgame planner (remaining group quality tiebreaker)
 
 Keep rejected candidates out of commits. Commit only promoted strategy versions
 and reusable evaluation tooling.
