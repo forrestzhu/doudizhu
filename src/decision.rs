@@ -539,12 +539,10 @@ fn choose_strategic_candidate(
         let tempo_score = if view.previous_play.is_none() {
             (plan_turns + control + stranded + threat + power_cost + coop)
                 * config.lead_tempo_plan_weight
-                + view
-                    .hand
-                    .len()
-                    .saturating_sub(hand.cards.len())
-                    // Bonus for harder-to-beat hand kinds when leading
-                    .saturating_sub(shape_priority(hand.kind) as usize)
+                + (view.hand.len().saturating_sub(hand.cards.len()))
+                    * 2usize
+                        // Bonus for harder-to-beat hand kinds when leading
+                        .saturating_sub(shape_priority(hand.kind) as usize)
         } else {
             plan_turns + control + stranded + threat + power_cost + coop
         };
