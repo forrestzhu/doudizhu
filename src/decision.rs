@@ -428,10 +428,6 @@ fn choose_candidate(
 }
 
 fn remaining_control_quality(remaining: &[Card], outside: &[Card]) -> usize {
-    if remaining.len() <= 3 {
-        return 0;
-    }
-
     let groups = grouped_by_rank(remaining);
     let outside_groups = grouped_by_rank(outside);
     let mut quality = 0;
@@ -543,7 +539,12 @@ fn choose_strategic_candidate(
         let tempo_score = if view.previous_play.is_none() {
             (plan_turns + control + stranded + threat + power_cost + coop)
                 * config.lead_tempo_plan_weight
-                + view.hand.len().saturating_sub(hand.cards.len())
+                + view
+                    .hand
+                    .len()
+                    .saturating_sub(hand.cards.len())
+                    // Bonus for harder-to-beat hand kinds when leading
+                    .saturating_sub(shape_priority(hand.kind) as usize)
         } else {
             plan_turns + control + stranded + threat + power_cost + coop
         };
@@ -669,7 +670,7 @@ fn plan_candidate_value(
         shape_priority(hand.kind),
         usize::from(is_power_hand(hand)),
         hand.strength,
-        usize::MAX - remaining_groups,
+        remaining_groups,
     )
 }
 

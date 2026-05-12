@@ -6,6 +6,8 @@ continue after context is cleared.
 ## Current Champion
 
 Use `strategies/strategic_v3.json` as the current best strategic policy.
+The v3 config with v4 algorithmic improvements (shape priority bonus,
+greedy tiebreaker fix).
 
 ```json
 {
@@ -136,7 +138,35 @@ When a candidate passes the promotion rule:
 
 ## Known Results
 
-Representative v2 to v3 comparison on the same deal sets:
+Representative v3 to v4 (algorithmic) comparison on the same deal sets:
+
+```text
+random_source=1778580340896195000 (batch 1)
+v3: landlord_strategic=0.71, farmers_strategic=0.83
+v4: landlord_strategic=0.74, farmers_strategic=0.85
+
+random_source=1778580344473397000 (batch 2)
+v3: landlord_strategic=0.73, farmers_strategic=0.85
+v4: landlord_strategic=0.75, farmers_strategic=0.86
+
+random_source=1778580349487460000 (batch 3)
+v3: landlord_strategic=0.70, farmers_strategic=0.82
+v4: landlord_strategic=0.72, farmers_strategic=0.84
+
+v3 averages: landlord=0.713, farmers=0.833
+v4 averages: landlord=0.737, farmers=0.850
+Delta: landlord +2.4pp, farmers +1.7pp
+```
+
+v4 verified on 3 additional random batches (no regressions):
+
+```text
+random_source=1778609375675002000: landlord=0.72, farmers=0.86
+random_source=1778609403071608000: landlord=0.73, farmers=0.85
+random_source=1778609431290740000: landlord=0.74, farmers=0.83
+```
+
+Historical v2 to v3 comparison:
 
 ```text
 random_source=1778580340896195000 (batch 1)
@@ -186,17 +216,28 @@ These were tested and should not be reintroduced without a new reason:
   all within ±1pp noise, no significant improvement.
 - Power cost tuning (pcn=2-4, pct=0): within ±1pp noise. Bomb decisions are
   already correct in most game situations.
+- Strategic pass (步长最短策略) with `after_plan >= current_plan`: massive regression
+  (landlord -19pp, farmers -28pp). AI passed too often, giving opponents free turns.
+- Conservative strategic pass with `after_plan > current_plan`: still regressed
+  (farmers -3pp).
+- 顶牌 (blocking high): always responding with highest cards against opponents
+  hurt both roles (landlord -7pp, farmers -7pp). Wastes strong cards early.
+- Increased threat values (25/15 vs 5/3): no measurable effect.
+- Extended threat assessment for 3-4 card opponents: landlord regressed -2.6pp
+  (too cautious against opponents with moderate hands).
 
 ## Current Next Step
 
-v3 promoted with algorithmic improvements over v2:
-- Opponent card inference from pass history (记牌)
-- Enhanced per-opponent threat assessment using pass constraints
-- Hand control quality scoring (控场) with `hand_control_weight`
-- Farmer cooperation logic (农民配合) with `farmer_cooperation_weight`
+v4 promoted with two algorithmic improvements over v3:
+- Shape priority bonus for lead plays: prefer harder-to-beat hand kinds
+  (airplanes > straights > triples > pairs > singles) when leading. Subtract
+  `shape_priority(hand.kind)` from lead tempo_score.
+- Greedy tiebreaker fix: `remaining_groups` instead of `usize::MAX - remaining_groups`
+  in `plan_candidate_value`. Correctly prefers plays that leave remaining hand
+  well-grouped.
 
-v3 improved landlord by 2.7pp on average with no regressions. Farmer side
-neutral-to-positive (+0.7pp average).
+v4 improved landlord by 2.4pp and farmers by 1.7pp on average, with zero
+regressions across 6 independent 1000-game batches.
 
 Suggested directions for future sessions:
 - 2-ply minimax: consider opponent responses when evaluating plays
