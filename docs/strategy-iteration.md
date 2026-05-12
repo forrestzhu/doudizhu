@@ -5,7 +5,7 @@ continue after context is cleared.
 
 ## Current Champion
 
-Use `strategies/strategic_v2.json` as the current best strategic policy.
+Use `strategies/strategic_v3.json` as the current best strategic policy.
 
 ```json
 {
@@ -14,12 +14,15 @@ Use `strategies/strategic_v2.json` as the current best strategic policy.
   "power_cost_normal": 4,
   "power_cost_threat": 1,
   "lead_longer_tiebreak": true,
-  "lead_tempo_plan_weight": 1
+  "lead_tempo_plan_weight": 1,
+  "stranded_risk_weight": 1,
+  "opponent_urgency_weight": 1,
+  "hand_control_weight": 2,
+  "farmer_cooperation_weight": 3
 }
 ```
 
-`strategies/strategic_v1.json` is retained for historical comparison. Its
-`lead_tempo_plan_weight` is `4`.
+`strategies/strategic_v2.json` is retained for historical comparison.
 
 Relevant commits:
 
@@ -114,32 +117,32 @@ When a candidate passes the promotion rule:
 
 ## Known Results
 
-Representative v1 to v2 comparison on the same deal set:
+Representative v2 to v3 comparison on the same deal sets:
+
+```text
+random_source=1778580340896195000 (batch 1)
+v2: landlord_strategic=0.63, farmers_strategic=0.91
+v3: landlord_strategic=0.65, farmers_strategic=0.91
+
+random_source=1778580344473397000 (batch 2)
+v2: landlord_strategic=0.72, farmers_strategic=0.88
+v3: landlord_strategic=0.77, farmers_strategic=0.89
+
+random_source=1778580349487460000 (batch 3)
+v2: landlord_strategic=0.59, farmers_strategic=0.79
+v3: landlord_strategic=0.60, farmers_strategic=0.80
+
+v2 averages: landlord=0.647, farmers=0.860
+v3 averages: landlord=0.673, farmers=0.867
+Delta: landlord +2.7pp, farmers +0.7pp
+```
+
+Historical v1 to v2 comparison:
 
 ```text
 random_source=1778566394333033000
-
-v1:
-all_rule_based      wins=[29, 43, 28], landlord=0.29, farmers=0.71
-landlord_strategic  wins=[66, 14, 20], landlord=0.66
-farmers_strategic   wins=[18, 51, 31], farmers=0.82
-
-v2:
-all_rule_based      wins=[29, 43, 28], landlord=0.29, farmers=0.71
-landlord_strategic  wins=[70, 13, 17], landlord=0.70
-farmers_strategic   wins=[16, 54, 30], farmers=0.84
-```
-
-Additional v2 checks:
-
-```text
-random_source=1778568404891843000
-landlord_strategic landlord=0.72
-farmers_strategic farmers=0.80
-
-random_source=1778567919819516000
-landlord_strategic landlord=0.66
-farmers_strategic farmers=0.83
+v1: landlord=0.66, farmers=0.82
+v2: landlord=0.70, farmers=0.84
 ```
 
 ## Failed Or Reverted Experiments
@@ -167,20 +170,24 @@ These were tested and should not be reintroduced without a new reason:
 
 ## Current Next Step
 
-Continue from `strategic_v2.json`. Weight tuning and scoring penalties tested in
-this session were within ±1pp noise. The v2 strategy appears near a local optimum
-for the current heuristic scoring approach.
+v3 promoted with algorithmic improvements over v2:
+- Opponent card inference from pass history (记牌)
+- Enhanced per-opponent threat assessment using pass constraints
+- Hand control quality scoring (控场) with `hand_control_weight`
+- Farmer cooperation logic (农民配合) with `farmer_cooperation_weight`
+
+v3 improved landlord by 2.7pp on average with no regressions. Farmer side
+neutral-to-positive (+0.7pp average).
 
 Suggested directions for future sessions:
-
 - 2-ply minimax: consider opponent responses when evaluating plays
-- Opponent card modeling: track revealed cards across history for better outside_cards
-- Adaptive strategy: different scoring weights based on game phase (early/mid/late)
+- Probabilistic opponent hand estimation: infer opponent holdings beyond pass constraints
+- Adaptive strategy: different scoring weights based on game phase
 - Learned evaluation: replace hand-crafted scoring with ML model
 
 Infrastructure improvements available for future tuning:
+- `--hand-control-weight` and `--farmer-cooperation-weight` CLI overrides
 - `--stranded-risk-weight` and `--opponent-urgency-weight` CLI overrides
-- Improved greedy endgame planner (remaining group quality tiebreaker)
 
 Keep rejected candidates out of commits. Commit only promoted strategy versions
 and reusable evaluation tooling.

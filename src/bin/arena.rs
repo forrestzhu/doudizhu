@@ -273,6 +273,12 @@ fn apply_strategy_overrides(args: &[String], config: &mut StrategicPolicyConfig)
     if let Some(value) = read_usize_arg(args, "--opponent-urgency-weight") {
         config.opponent_urgency_weight = value;
     }
+    if let Some(value) = read_usize_arg(args, "--hand-control-weight") {
+        config.hand_control_weight = value;
+    }
+    if let Some(value) = read_usize_arg(args, "--farmer-cooperation-weight") {
+        config.farmer_cooperation_weight = value;
+    }
     if has_flag(args, "--spend-power") {
         config.avoid_power_hands = false;
     }

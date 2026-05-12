@@ -1,6 +1,6 @@
 use crate::cards::{Card, Rank};
 use crate::rules::{ClassifiedHand, HandKind, RuleSet};
-use crate::visibility::PlayerView;
+use crate::visibility::{PlayerView, Relationship};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -98,6 +98,10 @@ pub struct StrategicPolicyConfig {
     pub stranded_risk_weight: usize,
     #[serde(default = "default_one")]
     pub opponent_urgency_weight: usize,
+    #[serde(default = "default_two")]
+    pub hand_control_weight: usize,
+    #[serde(default = "default_three")]
+    pub farmer_cooperation_weight: usize,
 }
 
 impl Default for StrategicPolicyConfig {
@@ -111,6 +115,8 @@ impl Default for StrategicPolicyConfig {
             lead_tempo_plan_weight: default_lead_tempo_plan_weight(),
             stranded_risk_weight: default_one(),
             opponent_urgency_weight: default_one(),
+            hand_control_weight: default_two(),
+            farmer_cooperation_weight: default_three(),
         }
     }
 }
@@ -121,6 +127,14 @@ fn default_lead_tempo_plan_weight() -> usize {
 
 fn default_one() -> usize {
     1
+}
+
+fn default_two() -> usize {
+    2
+}
+
+fn default_three() -> usize {
+    3
 }
 
 pub fn legal_candidates(
@@ -413,6 +427,95 @@ fn choose_candidate(
     candidates.into_iter().next()
 }
 
+fn remaining_control_quality(remaining: &[Card], outside: &[Card]) -> usize {
+    if remaining.len() <= 3 {
+        return 0;
+    }
+
+    let groups = grouped_by_rank(remaining);
+    let outside_groups = grouped_by_rank(outside);
+    let mut quality = 0;
+
+    for (rank, cards) in &groups {
+        let strength = rank.strength();
+        match cards.len() {
+            4 => quality += 5,
+            3 => quality += 2,
+            2 => {
+                let has_higher = outside_groups
+                    .iter()
+                    .any(|(r, c)| c.len() >= 2 && r.strength() > strength);
+                if !has_higher {
+                    quality += 2;
+                }
+            }
+            1 => {
+                let has_higher = outside.iter().any(|c| c.rank.strength() > strength);
+                if !has_higher {
+                    quality += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    quality
+}
+
+fn ally_id(view: &PlayerView) -> Option<usize> {
+    for (player_id, rel) in view.relationships.iter().enumerate() {
+        if *rel == Relationship::Ally {
+            return Some(player_id);
+        }
+    }
+    None
+}
+
+fn last_play_player_id(view: &PlayerView) -> Option<usize> {
+    for record in view.history.iter().rev() {
+        if let Decision::Play(_) = &record.decision {
+            return Some(record.player.0);
+        }
+    }
+    None
+}
+
+fn farmer_cooperation_penalty(hand: &ClassifiedHand, view: &PlayerView) -> usize {
+    let ally = match ally_id(view) {
+        Some(id) => id,
+        None => return 0,
+    };
+
+    let landlord_id = (0..view.hand_counts.len())
+        .find(|&p| is_opponent(view, p))
+        .unwrap_or(0);
+    let landlord_cards = view
+        .hand_counts
+        .get(landlord_id)
+        .copied()
+        .unwrap_or(usize::MAX);
+    let ally_cards = view.hand_counts.get(ally).copied().unwrap_or(usize::MAX);
+
+    let mut penalty: usize = 0;
+
+    if view.previous_play.is_some() {
+        if let Some(last_player) = last_play_player_id(view) {
+            if last_player == ally && ally_cards <= 3 {
+                penalty += 50;
+            }
+            if last_player == landlord_id && landlord_cards <= 2 {
+                penalty = penalty.saturating_sub(20);
+            }
+        }
+    }
+
+    if landlord_cards == 1 && is_power_hand(hand) {
+        penalty = penalty.saturating_sub(30);
+    }
+
+    penalty
+}
+
 fn choose_strategic_candidate(
     mut candidates: Vec<ClassifiedHand>,
     view: &PlayerView,
@@ -423,20 +526,26 @@ fn choose_strategic_candidate(
         return None;
     }
     let outside = outside_cards(view);
+    let models = build_opponent_models(view);
     let mut plan_cache = BTreeMap::new();
     candidates.sort_by_key(|hand| {
         let remaining = remaining_after(&view.hand, &hand.cards);
         let winning = !remaining.is_empty();
         let plan_turns = estimated_play_count_cached(&remaining, rules, &mut plan_cache, config);
-        let control = immediate_threat_control_risk(hand, &outside, view);
+        let control = enhanced_threat_control_risk(hand, &models, &outside, view);
         let stranded = stranded_single_risk(&remaining, &outside) * config.stranded_risk_weight;
-        let threat = opponent_threat_risk(hand, &remaining, view) * config.opponent_urgency_weight;
+        let threat = enhanced_opponent_threat_risk(hand, &remaining, &models, view)
+            * config.opponent_urgency_weight;
+        let hand_control = 50_usize.saturating_sub(remaining_control_quality(&remaining, &outside))
+            * config.hand_control_weight;
         let power_cost = strategic_power_cost(hand, &remaining, view, config);
+        let coop = farmer_cooperation_penalty(hand, view) * config.farmer_cooperation_weight;
         let tempo_score = if view.previous_play.is_none() {
-            (plan_turns + control + stranded + threat + power_cost) * config.lead_tempo_plan_weight
+            (plan_turns + control + stranded + threat + power_cost + coop)
+                * config.lead_tempo_plan_weight
                 + view.hand.len().saturating_sub(hand.cards.len())
         } else {
-            plan_turns + control + stranded + threat + power_cost
+            plan_turns + control + stranded + threat + power_cost + coop
         };
         let length_tiebreak = if config.lead_longer_tiebreak && view.previous_play.is_none() {
             usize::MAX - hand.cards.len()
@@ -448,6 +557,7 @@ fn choose_strategic_candidate(
             tempo_score,
             control,
             stranded,
+            hand_control,
             power_cost,
             config.avoid_power_hands == is_power_hand(hand),
             length_tiebreak,
@@ -605,34 +715,44 @@ fn stranded_single_risk(hand: &[Card], outside: &[Card]) -> usize {
         .sum()
 }
 
-fn immediate_threat_control_risk(
+fn enhanced_threat_control_risk(
     hand: &ClassifiedHand,
+    models: &[Option<OpponentModel>],
     outside: &[Card],
     view: &PlayerView,
 ) -> usize {
-    let shortest_opponent = view
-        .hand_counts
-        .iter()
-        .enumerate()
-        .filter(|(player, _)| is_opponent(view.self_id.0, *player))
-        .map(|(_, count)| *count)
-        .min()
-        .unwrap_or(usize::MAX);
-
-    match (shortest_opponent, hand.kind) {
-        (1, HandKind::Single) => outside
-            .iter()
-            .filter(|card| card.rank.strength() > hand.strength)
-            .count(),
-        (2, HandKind::Pair) => {
-            let groups = grouped_by_rank(outside);
-            groups
-                .iter()
-                .filter(|(rank, cards)| cards.len() >= 2 && rank.strength() > hand.strength)
-                .count()
+    let mut total_threat = 0;
+    for (player_id, model_opt) in models.iter().enumerate() {
+        if !is_opponent(view, player_id) {
+            continue;
         }
-        _ => 0,
+        let model = match model_opt {
+            Some(m) => m,
+            None => continue,
+        };
+        let opp_cards = view.hand_counts[player_id];
+        match (opp_cards, hand.kind) {
+            (1, HandKind::Single) => {
+                if opponent_can_beat_normal(model, hand) {
+                    total_threat += outside
+                        .iter()
+                        .filter(|card| card.rank.strength() > hand.strength)
+                        .count();
+                }
+            }
+            (2, HandKind::Pair) => {
+                if opponent_can_beat_normal(model, hand) {
+                    let groups = grouped_by_rank(outside);
+                    total_threat += groups
+                        .iter()
+                        .filter(|(rank, cards)| cards.len() >= 2 && rank.strength() > hand.strength)
+                        .count();
+                }
+            }
+            _ => {}
+        }
     }
+    total_threat
 }
 
 fn strategic_power_cost(
@@ -649,7 +769,7 @@ fn strategic_power_cost(
         .hand_counts
         .iter()
         .enumerate()
-        .filter(|(player, _)| is_opponent(view.self_id.0, *player))
+        .filter(|(player, _)| is_opponent(view, *player))
         .map(|(_, count)| *count)
         .min()
         .unwrap_or(usize::MAX);
@@ -661,33 +781,132 @@ fn strategic_power_cost(
     }
 }
 
-fn opponent_threat_risk(hand: &ClassifiedHand, remaining: &[Card], view: &PlayerView) -> usize {
+fn enhanced_opponent_threat_risk(
+    hand: &ClassifiedHand,
+    remaining: &[Card],
+    models: &[Option<OpponentModel>],
+    view: &PlayerView,
+) -> usize {
     if remaining.is_empty() {
         return 0;
     }
 
-    let shortest_opponent = view
-        .hand_counts
-        .iter()
-        .enumerate()
-        .filter(|(player, _)| is_opponent(view.self_id.0, *player))
-        .map(|(_, count)| *count)
-        .min()
-        .unwrap_or(usize::MAX);
+    let mut max_threat = 0;
+    for (player_id, model_opt) in models.iter().enumerate() {
+        if !is_opponent(view, player_id) {
+            continue;
+        }
+        let model = match model_opt {
+            Some(m) => m,
+            None => continue,
+        };
+        let opp_cards = view.hand_counts[player_id];
+        let threat = match (opp_cards, hand.kind) {
+            (1, HandKind::Single) => {
+                if opponent_can_beat_normal(model, hand) {
+                    5
+                } else {
+                    0
+                }
+            }
+            (2, HandKind::Pair) => {
+                if opponent_can_beat_normal(model, hand) {
+                    3
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        };
+        max_threat = max_threat.max(threat);
+    }
+    max_threat
+}
 
-    match (shortest_opponent, hand.kind) {
-        (1, HandKind::Single) => 5,
-        (2, HandKind::Pair) => 3,
-        _ => 0,
+fn is_opponent(view: &PlayerView, player: usize) -> bool {
+    match view.relationships.get(player) {
+        Some(rel) => *rel == Relationship::Opponent,
+        None => {
+            if view.self_id.0 == 0 {
+                player != 0
+            } else {
+                player == 0
+            }
+        }
     }
 }
 
-fn is_opponent(self_id: usize, player: usize) -> bool {
-    if self_id == 0 {
-        player != 0
-    } else {
-        player == 0
+#[derive(Clone)]
+struct OpponentModel {
+    played_cards: BTreeSet<Card>,
+    pass_constraints: Vec<PassConstraint>,
+    #[allow(dead_code)]
+    unknown_count: usize,
+}
+
+#[derive(Clone)]
+struct PassConstraint {
+    hand_kind: HandKind,
+    strength: u8,
+}
+
+fn build_opponent_models(view: &PlayerView) -> Vec<Option<OpponentModel>> {
+    let player_count = view.hand_counts.len();
+    let mut models: Vec<Option<OpponentModel>> = vec![None; player_count];
+
+    for (player_id, slot) in models.iter_mut().enumerate() {
+        if player_id == view.self_id.0 {
+            continue;
+        }
+        *slot = Some(OpponentModel {
+            played_cards: BTreeSet::new(),
+            pass_constraints: Vec::new(),
+            unknown_count: view.hand_counts[player_id],
+        });
     }
+
+    let mut current_play_to_beat: Option<&ClassifiedHand> = None;
+
+    for record in &view.history {
+        let pid = record.player.0;
+        if pid >= player_count {
+            continue;
+        }
+
+        match &record.decision {
+            Decision::Play(cards) => {
+                if let Some(ref mut model) = models[pid] {
+                    for card in cards {
+                        model.played_cards.insert(*card);
+                    }
+                }
+                if let Some(ref hand) = record.accepted_hand {
+                    current_play_to_beat = Some(hand);
+                }
+            }
+            Decision::Pass => {
+                if let Some(to_beat) = current_play_to_beat {
+                    if let Some(ref mut model) = models[pid] {
+                        model.pass_constraints.push(PassConstraint {
+                            hand_kind: to_beat.kind,
+                            strength: to_beat.strength,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    models
+}
+
+fn opponent_can_beat_normal(model: &OpponentModel, hand: &ClassifiedHand) -> bool {
+    for constraint in &model.pass_constraints {
+        if constraint.hand_kind == hand.kind && hand.strength >= constraint.strength {
+            return false;
+        }
+    }
+    true
 }
 
 fn outside_cards(view: &PlayerView) -> Vec<Card> {
@@ -1042,5 +1261,142 @@ mod tests {
         assert!(candidates
             .iter()
             .all(|candidate| rules.can_play_over(candidate, Some(&previous))));
+    }
+
+    #[test]
+    fn build_opponent_models_tracks_played_cards() {
+        use crate::engine::{PlayerId, TurnRecord};
+
+        let view = PlayerView {
+            self_id: PlayerId(0),
+            hand: vec![card(Rank::Ace, Suit::Clubs)],
+            hand_counts: vec![1, 2, 2],
+            relationships: vec![
+                Relationship::SelfPlayer,
+                Relationship::Opponent,
+                Relationship::Opponent,
+            ],
+            history: vec![
+                TurnRecord {
+                    player: PlayerId(1),
+                    decision: Decision::Play(vec![
+                        card(Rank::Three, Suit::Clubs),
+                        card(Rank::Three, Suit::Diamonds),
+                    ]),
+                    accepted_hand: BasicRules.classify(&[
+                        card(Rank::Three, Suit::Clubs),
+                        card(Rank::Three, Suit::Diamonds),
+                    ]),
+                },
+                TurnRecord {
+                    player: PlayerId(2),
+                    decision: Decision::Play(vec![
+                        card(Rank::Five, Suit::Clubs),
+                        card(Rank::Five, Suit::Diamonds),
+                    ]),
+                    accepted_hand: BasicRules.classify(&[
+                        card(Rank::Five, Suit::Clubs),
+                        card(Rank::Five, Suit::Diamonds),
+                    ]),
+                },
+            ],
+            previous_play: None,
+        };
+
+        let models = build_opponent_models(&view);
+
+        assert!(models[0].is_none()); // SelfPlayer
+        let p1 = models[1].as_ref().unwrap();
+        assert!(p1.played_cards.contains(&card(Rank::Three, Suit::Clubs)));
+        assert!(p1.played_cards.contains(&card(Rank::Three, Suit::Diamonds)));
+        assert_eq!(p1.unknown_count, 2);
+        let p2 = models[2].as_ref().unwrap();
+        assert!(p2.played_cards.contains(&card(Rank::Five, Suit::Clubs)));
+    }
+
+    #[test]
+    fn build_opponent_models_records_pass_constraints() {
+        use crate::engine::{PlayerId, TurnRecord};
+
+        let pair_seven = BasicRules.classify(&[
+            card(Rank::Seven, Suit::Clubs),
+            card(Rank::Seven, Suit::Diamonds),
+        ]);
+
+        let view = PlayerView {
+            self_id: PlayerId(0),
+            hand: vec![card(Rank::Ace, Suit::Clubs)],
+            hand_counts: vec![1, 3, 2],
+            relationships: vec![
+                Relationship::SelfPlayer,
+                Relationship::Opponent,
+                Relationship::Opponent,
+            ],
+            history: vec![
+                TurnRecord {
+                    player: PlayerId(1),
+                    decision: Decision::Play(vec![
+                        card(Rank::Seven, Suit::Clubs),
+                        card(Rank::Seven, Suit::Diamonds),
+                    ]),
+                    accepted_hand: pair_seven.clone(),
+                },
+                TurnRecord {
+                    player: PlayerId(2),
+                    decision: Decision::Pass,
+                    accepted_hand: None,
+                },
+            ],
+            previous_play: pair_seven,
+        };
+
+        let models = build_opponent_models(&view);
+
+        let p2 = models[2].as_ref().unwrap();
+        assert_eq!(p2.pass_constraints.len(), 1);
+        assert_eq!(p2.pass_constraints[0].hand_kind, HandKind::Pair);
+        assert_eq!(p2.pass_constraints[0].strength, Rank::Seven.strength());
+    }
+
+    #[test]
+    fn opponent_can_beat_normal_uses_pass_constraints() {
+        let model = OpponentModel {
+            played_cards: BTreeSet::new(),
+            pass_constraints: vec![PassConstraint {
+                hand_kind: HandKind::Pair,
+                strength: Rank::Seven.strength(),
+            }],
+            unknown_count: 3,
+        };
+
+        let pair_five = ClassifiedHand {
+            kind: HandKind::Pair,
+            strength: Rank::Five.strength(),
+            cards: vec![
+                card(Rank::Five, Suit::Clubs),
+                card(Rank::Five, Suit::Diamonds),
+            ],
+        };
+        // passed on Pair(7) → lacks Pair(8+), but might have Pair(6) or Pair(7) → can beat Pair(5)
+        assert!(opponent_can_beat_normal(&model, &pair_five));
+
+        let pair_nine = ClassifiedHand {
+            kind: HandKind::Pair,
+            strength: Rank::Nine.strength(),
+            cards: vec![
+                card(Rank::Nine, Suit::Clubs),
+                card(Rank::Nine, Suit::Diamonds),
+            ],
+        };
+        // passed on Pair(7) → lacks Pair(8+) → cannot beat Pair(9)
+        assert!(!opponent_can_beat_normal(&model, &pair_nine));
+
+        let single_five = ClassifiedHand {
+            kind: HandKind::Single,
+            strength: Rank::Five.strength(),
+            cards: vec![card(Rank::Five, Suit::Clubs)],
+        };
+        // different kind → constraint doesn't apply
+        assert!(opponent_can_beat_normal(&model, &single_five));
     }
 }
