@@ -143,27 +143,27 @@ Representative v3 to v4 (algorithmic) comparison on the same deal sets:
 ```text
 random_source=1778580340896195000 (batch 1)
 v3: landlord_strategic=0.71, farmers_strategic=0.83
-v4: landlord_strategic=0.74, farmers_strategic=0.85
+v4: landlord_strategic=0.76, farmers_strategic=0.86
 
 random_source=1778580344473397000 (batch 2)
 v3: landlord_strategic=0.73, farmers_strategic=0.85
-v4: landlord_strategic=0.75, farmers_strategic=0.86
+v4: landlord_strategic=0.76, farmers_strategic=0.85
 
 random_source=1778580349487460000 (batch 3)
 v3: landlord_strategic=0.70, farmers_strategic=0.82
-v4: landlord_strategic=0.72, farmers_strategic=0.84
+v4: landlord_strategic=0.75, farmers_strategic=0.85
 
 v3 averages: landlord=0.713, farmers=0.833
-v4 averages: landlord=0.737, farmers=0.850
-Delta: landlord +2.4pp, farmers +1.7pp
+v4 averages: landlord=0.757, farmers=0.853
+Delta: landlord +4.4pp, farmers +2.0pp
 ```
 
 v4 verified on 3 additional random batches (no regressions):
 
 ```text
-random_source=1778609375675002000: landlord=0.72, farmers=0.86
-random_source=1778609403071608000: landlord=0.73, farmers=0.85
-random_source=1778609431290740000: landlord=0.74, farmers=0.83
+random_source=1778610141259568000: landlord=0.74, farmers=0.85
+random_source=1778610168311022000: landlord=0.75, farmers=0.86
+random_source=1778610196406412000: landlord=0.78, farmers=0.85
 ```
 
 Historical v2 to v3 comparison:
@@ -225,18 +225,22 @@ These were tested and should not be reintroduced without a new reason:
 - Increased threat values (25/15 vs 5/3): no measurable effect.
 - Extended threat assessment for 3-4 card opponents: landlord regressed -2.6pp
   (too cautious against opponents with moderate hands).
+- 3x card-length preference: same as 2x within noise, 2x is the sweet spot.
+- 2x shape priority bonus: slightly worse than 1x for landlord (-1pp).
 
 ## Current Next Step
 
-v4 promoted with two algorithmic improvements over v3:
+v4 promoted with three algorithmic improvements over v3:
 - Shape priority bonus for lead plays: prefer harder-to-beat hand kinds
   (airplanes > straights > triples > pairs > singles) when leading. Subtract
   `shape_priority(hand.kind)` from lead tempo_score.
+- Double card-length preference: 2x weight for `hand.len() - cards.len()` in
+  lead tempo, making the AI strongly prefer longer combos when leading.
 - Greedy tiebreaker fix: `remaining_groups` instead of `usize::MAX - remaining_groups`
   in `plan_candidate_value`. Correctly prefers plays that leave remaining hand
   well-grouped.
 
-v4 improved landlord by 2.4pp and farmers by 1.7pp on average, with zero
+v4 improved landlord by 4.4pp and farmers by 2.0pp on average, with zero
 regressions across 6 independent 1000-game batches.
 
 Suggested directions for future sessions:
