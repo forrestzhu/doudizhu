@@ -1,5 +1,8 @@
 use crate::cards::Card;
-use crate::decision::{legal_candidates, DecisionPolicy, RuleBasedPolicy, RuleBasedPolicyConfig};
+use crate::decision::{
+    legal_candidates, DecisionPolicy, RuleBasedPolicy, RuleBasedPolicyConfig, StrategicPolicy,
+    StrategicPolicyConfig,
+};
 use crate::engine::{Deal, Game, GameConfig, GameError, GameStatus, PlayerId, TurnRecord};
 use crate::rules::{BasicRules, ClassifiedHand, RuleSet};
 use serde::{Deserialize, Serialize};
@@ -7,6 +10,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
 pub enum HarnessError {
@@ -70,9 +74,74 @@ pub struct SeededRunReport {
     pub deterministic: bool,
     pub seed: u64,
     pub games: usize,
+    pub landlord_policy: String,
     pub wins: Vec<usize>,
     pub avg_turns: f64,
     pub reports: Vec<SeededGameReport>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LandlordPolicy {
+    RuleBased,
+    Strategic,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PolicyPlacement {
+    AllRuleBased,
+    LandlordStrategic,
+    FarmersStrategic,
+}
+
+impl PolicyPlacement {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::AllRuleBased => "all_rule_based",
+            Self::LandlordStrategic => "landlord_strategic",
+            Self::FarmersStrategic => "farmers_strategic",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TournamentRunReport {
+    pub placement: String,
+    pub games: usize,
+    pub wins: Vec<usize>,
+    pub landlord_win_rate: f64,
+    pub farmer_win_rate: f64,
+    pub avg_turns: f64,
+    pub reports: Vec<SeededGameReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TournamentConclusion {
+    pub significance_threshold: f64,
+    pub landlord_strategic_delta: f64,
+    pub farmers_strategic_delta: f64,
+    pub landlord_strategic_significant: bool,
+    pub farmers_strategic_significant: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RandomTournamentReport {
+    pub schema_version: String,
+    pub deterministic: bool,
+    pub random_source: u64,
+    pub games: usize,
+    pub deal_seeds: Vec<u64>,
+    pub strategy: StrategicPolicyConfig,
+    pub runs: Vec<TournamentRunReport>,
+    pub conclusion: TournamentConclusion,
+}
+
+impl LandlordPolicy {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::RuleBased => "rule_based",
+            Self::Strategic => "strategic",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -266,6 +335,15 @@ pub fn run_seeded_games(
     games: usize,
     max_turns: usize,
 ) -> Result<SeededRunReport, HarnessError> {
+    run_seeded_games_with_landlord_policy(seed, games, max_turns, LandlordPolicy::RuleBased)
+}
+
+pub fn run_seeded_games_with_landlord_policy(
+    seed: u64,
+    games: usize,
+    max_turns: usize,
+    landlord_policy: LandlordPolicy,
+) -> Result<SeededRunReport, HarnessError> {
     if games == 0 {
         return Err(HarnessError::InvalidScenario(
             "games must be greater than zero".to_string(),
@@ -284,7 +362,7 @@ pub fn run_seeded_games(
             ..GameConfig::default()
         };
         let mut game = Game::new(deal, config)?;
-        let mut policies = rule_based_policies(3, RuleBasedPolicyConfig::default());
+        let mut policies = self_play_policies(landlord_policy, RuleBasedPolicyConfig::default());
 
         match game.run(&mut policies) {
             Ok(outcome) => {
@@ -317,10 +395,145 @@ pub fn run_seeded_games(
         deterministic: true,
         seed,
         games,
+        landlord_policy: landlord_policy.name().to_string(),
         wins,
         avg_turns: total_turns as f64 / games as f64,
         reports,
     })
+}
+
+pub fn run_random_tournament(
+    games: usize,
+    max_turns: usize,
+    strategy: StrategicPolicyConfig,
+    significance_threshold: f64,
+) -> Result<RandomTournamentReport, HarnessError> {
+    if games == 0 {
+        return Err(HarnessError::InvalidScenario(
+            "games must be greater than zero".to_string(),
+        ));
+    }
+
+    let random_source = random_source();
+    let deal_seeds = random_deal_seeds(random_source, games);
+    let baseline = run_policy_placement_games(
+        &deal_seeds,
+        max_turns,
+        PolicyPlacement::AllRuleBased,
+        strategy,
+    )?;
+    let landlord_strategic = run_policy_placement_games(
+        &deal_seeds,
+        max_turns,
+        PolicyPlacement::LandlordStrategic,
+        strategy,
+    )?;
+    let farmers_strategic = run_policy_placement_games(
+        &deal_seeds,
+        max_turns,
+        PolicyPlacement::FarmersStrategic,
+        strategy,
+    )?;
+
+    let landlord_strategic_delta =
+        landlord_strategic.landlord_win_rate - baseline.landlord_win_rate;
+    let farmers_strategic_delta = farmers_strategic.farmer_win_rate - baseline.farmer_win_rate;
+
+    Ok(RandomTournamentReport {
+        schema_version: "2026-05-11".to_string(),
+        deterministic: false,
+        random_source,
+        games,
+        deal_seeds,
+        strategy,
+        runs: vec![baseline, landlord_strategic, farmers_strategic],
+        conclusion: TournamentConclusion {
+            significance_threshold,
+            landlord_strategic_delta,
+            farmers_strategic_delta,
+            landlord_strategic_significant: landlord_strategic_delta >= significance_threshold,
+            farmers_strategic_significant: farmers_strategic_delta >= significance_threshold,
+        },
+    })
+}
+
+fn run_policy_placement_games(
+    deal_seeds: &[u64],
+    max_turns: usize,
+    placement: PolicyPlacement,
+    strategy: StrategicPolicyConfig,
+) -> Result<TournamentRunReport, HarnessError> {
+    let mut wins = vec![0usize; 3];
+    let mut reports = Vec::with_capacity(deal_seeds.len());
+    let mut total_turns = 0usize;
+
+    for (index, game_seed) in deal_seeds.iter().copied().enumerate() {
+        let deal = Deal::from_seed(game_seed, 3);
+        let config = GameConfig {
+            max_turns,
+            ..GameConfig::default()
+        };
+        let mut game = Game::new(deal, config)?;
+        let mut policies =
+            placement_policies(placement, RuleBasedPolicyConfig::default(), strategy);
+
+        match game.run(&mut policies) {
+            Ok(outcome) => {
+                wins[outcome.winner.0] += 1;
+                total_turns += outcome.turns;
+                reports.push(SeededGameReport {
+                    game: index + 1,
+                    seed: game_seed,
+                    winner: Some(outcome.winner.0),
+                    turns: outcome.turns,
+                    history_hash: history_hash(game.history()),
+                    error: None,
+                });
+            }
+            Err(error) => {
+                reports.push(SeededGameReport {
+                    game: index + 1,
+                    seed: game_seed,
+                    winner: None,
+                    turns: game.history().len(),
+                    history_hash: history_hash(game.history()),
+                    error: Some(format!("{error:?}")),
+                });
+            }
+        }
+    }
+
+    let games = deal_seeds.len();
+    let landlord_win_rate = wins[0] as f64 / games as f64;
+    let farmer_win_rate = (wins[1] + wins[2]) as f64 / games as f64;
+
+    Ok(TournamentRunReport {
+        placement: placement.name().to_string(),
+        games,
+        wins,
+        landlord_win_rate,
+        farmer_win_rate,
+        avg_turns: total_turns as f64 / games as f64,
+        reports,
+    })
+}
+
+fn random_source() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    (now.as_nanos() as u64) ^ ((now.as_nanos() >> 64) as u64)
+}
+
+fn random_deal_seeds(mut state: u64, games: usize) -> Vec<u64> {
+    (0..games)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        })
+        .collect()
 }
 
 pub fn run_deal(seed: u64, viewer: usize) -> Result<DealReport, HarnessError> {
@@ -424,6 +637,15 @@ pub fn run_trace_with_config(
     max_turns: usize,
     policy_config: RuleBasedPolicyConfig,
 ) -> Result<EpisodeReport, HarnessError> {
+    run_trace_with_landlord_policy(seed, max_turns, policy_config, LandlordPolicy::RuleBased)
+}
+
+pub fn run_trace_with_landlord_policy(
+    seed: u64,
+    max_turns: usize,
+    policy_config: RuleBasedPolicyConfig,
+    landlord_policy: LandlordPolicy,
+) -> Result<EpisodeReport, HarnessError> {
     let deal = Deal::from_seed(seed, 3);
     let initial_hands = deal.hands.iter().map(|hand| card_strings(hand)).collect();
     let bottom_cards = card_strings(&deal.bottom_cards);
@@ -432,7 +654,7 @@ pub fn run_trace_with_config(
         ..GameConfig::default()
     };
     let mut game = Game::new(deal, config)?;
-    let mut policies = rule_based_policies(3, policy_config);
+    let mut policies = self_play_policies(landlord_policy, policy_config);
     let error = match game.run(&mut policies) {
         Ok(_) => None,
         Err(error) => Some(format!("{error:?}")),
@@ -442,7 +664,7 @@ pub fn run_trace_with_config(
         schema_version: "2026-05-11".to_string(),
         deterministic: true,
         seed,
-        policies: policy_reports(3, policy_config),
+        policies: policy_reports_with_landlord(3, policy_config, landlord_policy),
         initial_hands,
         bottom_cards,
         winner: game.winner().map(|winner| winner.0),
@@ -628,11 +850,56 @@ fn rule_based_policies(
         .collect()
 }
 
-fn policy_reports(players: usize, config: RuleBasedPolicyConfig) -> Vec<PolicyReport> {
+fn self_play_policies(
+    landlord_policy: LandlordPolicy,
+    config: RuleBasedPolicyConfig,
+) -> Vec<Box<dyn DecisionPolicy>> {
+    let landlord: Box<dyn DecisionPolicy> = match landlord_policy {
+        LandlordPolicy::RuleBased => Box::new(RuleBasedPolicy::new(config)),
+        LandlordPolicy::Strategic => Box::new(StrategicPolicy::new(config)),
+    };
+
+    vec![
+        landlord,
+        Box::new(RuleBasedPolicy::new(config)),
+        Box::new(RuleBasedPolicy::new(config)),
+    ]
+}
+
+fn placement_policies(
+    placement: PolicyPlacement,
+    rule_config: RuleBasedPolicyConfig,
+    strategy_config: StrategicPolicyConfig,
+) -> Vec<Box<dyn DecisionPolicy>> {
+    match placement {
+        PolicyPlacement::AllRuleBased => rule_based_policies(3, rule_config),
+        PolicyPlacement::LandlordStrategic => vec![
+            Box::new(StrategicPolicy::from_config(strategy_config)),
+            Box::new(RuleBasedPolicy::new(rule_config)),
+            Box::new(RuleBasedPolicy::new(rule_config)),
+        ],
+        PolicyPlacement::FarmersStrategic => vec![
+            Box::new(RuleBasedPolicy::new(rule_config)),
+            Box::new(StrategicPolicy::from_config(strategy_config)),
+            Box::new(StrategicPolicy::from_config(strategy_config)),
+        ],
+    }
+}
+
+fn policy_reports_with_landlord(
+    players: usize,
+    config: RuleBasedPolicyConfig,
+    landlord_policy: LandlordPolicy,
+) -> Vec<PolicyReport> {
     (0..players)
         .map(|player| PolicyReport {
             player,
-            name: "rule_based".to_string(),
+            name: if player == 0 {
+                landlord_policy.name()
+            } else {
+                "rule_based"
+            }
+            .to_string(),
             avoid_power_hands: config.avoid_power_hands,
         })
         .collect()
@@ -792,11 +1059,11 @@ fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use crate::cards::{Card, Rank, Suit};
-    use crate::decision::RuleBasedPolicyConfig;
+    use crate::decision::{RuleBasedPolicyConfig, StrategicPolicyConfig};
     use crate::engine::Deal;
     use crate::harness::{
-        run_deal, run_scenario_str, run_session, run_session_after_steps, run_trace,
-        run_trace_with_config, HarnessError,
+        run_deal, run_scenario_str, run_seeded_games_with_landlord_policy, run_session,
+        run_session_after_steps, run_trace, run_trace_with_config, HarnessError, LandlordPolicy,
     };
     use crate::rules::{BasicRules, RuleSet};
     use std::str::FromStr;
@@ -869,6 +1136,37 @@ mod tests {
 
         assert!(report.pass, "{report:#?}");
         assert_eq!(report.metrics.get("games").copied(), Some(2));
+    }
+
+    #[test]
+    fn seeded_games_can_install_strategic_landlord_policy() {
+        let report =
+            run_seeded_games_with_landlord_policy(42, 2, 1_000, LandlordPolicy::Strategic).unwrap();
+
+        assert_eq!(report.landlord_policy, "strategic");
+        assert_eq!(report.reports.len(), 2);
+        assert!(report.reports.iter().all(|game| game.error.is_none()));
+    }
+
+    #[test]
+    fn random_tournament_compares_all_policy_placements() {
+        let report =
+            super::run_random_tournament(2, 1_000, StrategicPolicyConfig::default(), 0.10).unwrap();
+
+        assert!(!report.deterministic);
+        assert_eq!(report.deal_seeds.len(), 2);
+        assert_eq!(
+            report
+                .runs
+                .iter()
+                .map(|run| run.placement.as_str())
+                .collect::<Vec<_>>(),
+            ["all_rule_based", "landlord_strategic", "farmers_strategic"]
+        );
+        assert!(report
+            .runs
+            .iter()
+            .all(|run| run.reports.iter().all(|game| game.error.is_none())));
     }
 
     #[test]

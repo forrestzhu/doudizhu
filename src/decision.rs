@@ -1,7 +1,8 @@
 use crate::cards::{Card, Rank};
-use crate::rules::{ClassifiedHand, RuleSet};
+use crate::rules::{ClassifiedHand, HandKind, RuleSet};
 use crate::visibility::PlayerView;
-use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decision {
@@ -52,6 +53,56 @@ impl DecisionPolicy for RuleBasedPolicy {
         choose_candidate(candidates, self.config)
             .map(|hand| Decision::Play(hand.cards))
             .unwrap_or(Decision::Pass)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct StrategicPolicy {
+    config: StrategicPolicyConfig,
+}
+
+impl StrategicPolicy {
+    pub fn new(config: RuleBasedPolicyConfig) -> Self {
+        Self {
+            config: StrategicPolicyConfig {
+                avoid_power_hands: config.avoid_power_hands,
+                ..StrategicPolicyConfig::default()
+            },
+        }
+    }
+
+    pub fn from_config(config: StrategicPolicyConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl DecisionPolicy for StrategicPolicy {
+    fn decide(&mut self, view: &PlayerView, rules: &dyn RuleSet) -> Decision {
+        let candidates = legal_candidates(&view.hand, view.previous_play.as_ref(), rules);
+        choose_strategic_candidate(candidates, view, rules, self.config)
+            .map(|hand| Decision::Play(hand.cards))
+            .unwrap_or(Decision::Pass)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StrategicPolicyConfig {
+    pub avoid_power_hands: bool,
+    pub endgame_search_limit: usize,
+    pub power_cost_normal: usize,
+    pub power_cost_threat: usize,
+    pub lead_longer_tiebreak: bool,
+}
+
+impl Default for StrategicPolicyConfig {
+    fn default() -> Self {
+        Self {
+            avoid_power_hands: true,
+            endgame_search_limit: 10,
+            power_cost_normal: 4,
+            power_cost_threat: 1,
+            lead_longer_tiebreak: true,
+        }
     }
 }
 
@@ -345,6 +396,274 @@ fn choose_candidate(
     candidates.into_iter().next()
 }
 
+fn choose_strategic_candidate(
+    mut candidates: Vec<ClassifiedHand>,
+    view: &PlayerView,
+    rules: &dyn RuleSet,
+    config: StrategicPolicyConfig,
+) -> Option<ClassifiedHand> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let outside = outside_cards(view);
+    let mut plan_cache = BTreeMap::new();
+    candidates.sort_by_key(|hand| {
+        let remaining = remaining_after(&view.hand, &hand.cards);
+        let winning = !remaining.is_empty();
+        let plan_turns = estimated_play_count_cached(&remaining, rules, &mut plan_cache, config);
+        let control = immediate_threat_control_risk(hand, &outside, view);
+        let stranded = stranded_single_risk(&remaining, &outside);
+        let threat = opponent_threat_risk(hand, &remaining, view);
+        let power_cost = strategic_power_cost(hand, &remaining, view, config);
+        let length_tiebreak = if config.lead_longer_tiebreak && view.previous_play.is_none() {
+            usize::MAX - hand.cards.len()
+        } else {
+            hand.cards.len()
+        };
+        (
+            winning,
+            plan_turns + control + stranded + threat + power_cost,
+            control,
+            stranded,
+            power_cost,
+            config.avoid_power_hands == is_power_hand(hand),
+            length_tiebreak,
+            hand.strength,
+            hand.cards
+                .iter()
+                .map(|card| card.rank.strength())
+                .sum::<u8>(),
+        )
+    });
+
+    candidates.into_iter().next()
+}
+
+fn remaining_after(hand: &[Card], played: &[Card]) -> Vec<Card> {
+    let mut remaining = hand.to_vec();
+    for card in played {
+        if let Some(index) = remaining.iter().position(|candidate| candidate == card) {
+            remaining.remove(index);
+        }
+    }
+    remaining.sort();
+    remaining
+}
+
+fn estimated_play_count_cached(
+    hand: &[Card],
+    rules: &dyn RuleSet,
+    cache: &mut BTreeMap<String, usize>,
+    config: StrategicPolicyConfig,
+) -> usize {
+    if hand.len() > config.endgame_search_limit {
+        return estimated_play_count_greedy(hand, rules);
+    }
+    if hand.is_empty() {
+        return 0;
+    }
+
+    let key = cards_cache_key(hand);
+    if let Some(cached) = cache.get(&key) {
+        return *cached;
+    }
+
+    let candidates = legal_candidates(hand, None, rules);
+    let best = candidates
+        .into_iter()
+        .map(|candidate| {
+            1 + estimated_play_count_cached(
+                &remaining_after(hand, &candidate.cards),
+                rules,
+                cache,
+                config,
+            )
+        })
+        .min()
+        .unwrap_or(hand.len());
+
+    cache.insert(key, best);
+    best
+}
+
+fn cards_cache_key(cards: &[Card]) -> String {
+    let mut sorted = cards.to_vec();
+    sorted.sort();
+    sorted
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn estimated_play_count_greedy(hand: &[Card], rules: &dyn RuleSet) -> usize {
+    if hand.is_empty() {
+        return 0;
+    }
+
+    let mut remaining = hand.to_vec();
+    let mut turns = 0;
+
+    while !remaining.is_empty() {
+        let candidates = legal_candidates(&remaining, None, rules);
+        let Some(best) = candidates.into_iter().max_by_key(plan_candidate_value) else {
+            return turns + remaining.len();
+        };
+        remaining = remaining_after(&remaining, &best.cards);
+        turns += 1;
+    }
+
+    turns
+}
+
+fn plan_candidate_value(hand: &ClassifiedHand) -> (usize, u8, usize, u8) {
+    (
+        hand.cards.len(),
+        shape_priority(hand.kind),
+        usize::from(is_power_hand(hand)),
+        hand.strength,
+    )
+}
+
+fn shape_priority(kind: HandKind) -> u8 {
+    match kind {
+        HandKind::Rocket => 13,
+        HandKind::Bomb => 12,
+        HandKind::AirplaneWithPairs => 11,
+        HandKind::AirplaneWithSingles => 10,
+        HandKind::Airplane => 9,
+        HandKind::FourWithTwoPairs => 8,
+        HandKind::FourWithTwoSingles => 7,
+        HandKind::Straight => 6,
+        HandKind::SerialPairs => 5,
+        HandKind::TripleWithPair => 4,
+        HandKind::TripleWithSingle => 3,
+        HandKind::Triple => 2,
+        HandKind::Pair => 1,
+        HandKind::Single => 0,
+    }
+}
+
+fn stranded_single_risk(hand: &[Card], outside: &[Card]) -> usize {
+    let groups = grouped_by_rank(hand);
+    let outside_max = outside
+        .iter()
+        .map(|card| card.rank.strength())
+        .max()
+        .unwrap_or(0);
+
+    groups
+        .iter()
+        .filter(|(rank, cards)| {
+            cards.len() == 1 && rank.strength() < outside_max && !rank.is_joker()
+        })
+        .map(|(rank, _)| {
+            if rank.strength() <= Rank::Ten.strength() {
+                3
+            } else {
+                1
+            }
+        })
+        .sum()
+}
+
+fn immediate_threat_control_risk(
+    hand: &ClassifiedHand,
+    outside: &[Card],
+    view: &PlayerView,
+) -> usize {
+    let shortest_opponent = view
+        .hand_counts
+        .iter()
+        .enumerate()
+        .filter(|(player, _)| *player != view.self_id.0)
+        .map(|(_, count)| *count)
+        .min()
+        .unwrap_or(usize::MAX);
+
+    match (shortest_opponent, hand.kind) {
+        (1, HandKind::Single) => outside
+            .iter()
+            .filter(|card| card.rank.strength() > hand.strength)
+            .count(),
+        (2, HandKind::Pair) => {
+            let groups = grouped_by_rank(outside);
+            groups
+                .iter()
+                .filter(|(rank, cards)| cards.len() >= 2 && rank.strength() > hand.strength)
+                .count()
+        }
+        _ => 0,
+    }
+}
+
+fn strategic_power_cost(
+    hand: &ClassifiedHand,
+    remaining: &[Card],
+    view: &PlayerView,
+    config: StrategicPolicyConfig,
+) -> usize {
+    if !config.avoid_power_hands || !is_power_hand(hand) || remaining.is_empty() {
+        return 0;
+    }
+
+    let shortest_opponent = view
+        .hand_counts
+        .iter()
+        .enumerate()
+        .filter(|(player, _)| *player != view.self_id.0)
+        .map(|(_, count)| *count)
+        .min()
+        .unwrap_or(usize::MAX);
+
+    if shortest_opponent <= 2 {
+        config.power_cost_threat
+    } else {
+        config.power_cost_normal
+    }
+}
+
+fn opponent_threat_risk(hand: &ClassifiedHand, remaining: &[Card], view: &PlayerView) -> usize {
+    if remaining.is_empty() {
+        return 0;
+    }
+
+    let shortest_opponent = view
+        .hand_counts
+        .iter()
+        .enumerate()
+        .filter(|(player, _)| *player != view.self_id.0)
+        .map(|(_, count)| *count)
+        .min()
+        .unwrap_or(usize::MAX);
+
+    match (shortest_opponent, hand.kind) {
+        (1, HandKind::Single) => 5,
+        (2, HandKind::Pair) => 3,
+        _ => 0,
+    }
+}
+
+fn outside_cards(view: &PlayerView) -> Vec<Card> {
+    let mut known = BTreeSet::new();
+    for card in &view.hand {
+        known.insert(*card);
+    }
+    for record in &view.history {
+        if let Decision::Play(cards) = &record.decision {
+            for card in cards {
+                known.insert(*card);
+            }
+        }
+    }
+
+    Card::standard_deck()
+        .into_iter()
+        .filter(|card| !known.contains(card))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +762,102 @@ mod tests {
                 card(Rank::Four, Suit::Diamonds),
                 card(Rank::Four, Suit::Hearts),
                 card(Rank::Four, Suit::Spades),
+            ])
+        );
+    }
+
+    #[test]
+    fn strategic_policy_does_not_break_pair_when_opening() {
+        let rules = BasicRules;
+        let view = PlayerView {
+            self_id: crate::engine::PlayerId(0),
+            hand: vec![
+                card(Rank::Three, Suit::Clubs),
+                card(Rank::Three, Suit::Diamonds),
+                card(Rank::Four, Suit::Clubs),
+                card(Rank::Four, Suit::Diamonds),
+                card(Rank::Five, Suit::Clubs),
+                card(Rank::Six, Suit::Clubs),
+            ],
+            hand_counts: vec![6, 17, 17],
+            relationships: Vec::new(),
+            history: Vec::new(),
+            previous_play: None,
+        };
+        let mut policy = StrategicPolicy::default();
+
+        assert_ne!(
+            policy.decide(&view, &rules),
+            Decision::Play(vec![card(Rank::Three, Suit::Clubs)])
+        );
+    }
+
+    #[test]
+    fn strategic_policy_responds_with_single_that_preserves_pair() {
+        let rules = BasicRules;
+        let previous_play = rules.classify(&[card(Rank::Three, Suit::Clubs)]);
+        let view = PlayerView {
+            self_id: crate::engine::PlayerId(0),
+            hand: vec![
+                card(Rank::Four, Suit::Clubs),
+                card(Rank::Four, Suit::Diamonds),
+                card(Rank::Five, Suit::Clubs),
+            ],
+            hand_counts: vec![3, 17, 17],
+            relationships: Vec::new(),
+            history: Vec::new(),
+            previous_play,
+        };
+        let mut policy = StrategicPolicy::default();
+
+        assert_eq!(
+            policy.decide(&view, &rules),
+            Decision::Play(vec![card(Rank::Five, Suit::Clubs)])
+        );
+    }
+
+    #[test]
+    fn strategic_policy_uses_high_single_when_opponent_is_almost_out() {
+        let rules = BasicRules;
+        let previous_play = rules.classify(&[card(Rank::Seven, Suit::Clubs)]);
+        let view = PlayerView {
+            self_id: crate::engine::PlayerId(0),
+            hand: vec![card(Rank::Eight, Suit::Clubs), card(Rank::Ace, Suit::Clubs)],
+            hand_counts: vec![2, 1, 5],
+            relationships: Vec::new(),
+            history: Vec::new(),
+            previous_play,
+        };
+        let mut policy = StrategicPolicy::default();
+
+        assert_eq!(
+            policy.decide(&view, &rules),
+            Decision::Play(vec![card(Rank::Ace, Suit::Clubs)])
+        );
+    }
+
+    #[test]
+    fn strategic_policy_farmer_blocks_single_when_landlord_has_one_card() {
+        let rules = BasicRules;
+        let view = PlayerView {
+            self_id: crate::engine::PlayerId(1),
+            hand: vec![
+                card(Rank::Three, Suit::Clubs),
+                card(Rank::Four, Suit::Clubs),
+                card(Rank::Four, Suit::Diamonds),
+            ],
+            hand_counts: vec![1, 3, 5],
+            relationships: Vec::new(),
+            history: Vec::new(),
+            previous_play: None,
+        };
+        let mut policy = StrategicPolicy::default();
+
+        assert_eq!(
+            policy.decide(&view, &rules),
+            Decision::Play(vec![
+                card(Rank::Four, Suit::Clubs),
+                card(Rank::Four, Suit::Diamonds),
             ])
         );
     }

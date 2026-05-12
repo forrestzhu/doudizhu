@@ -1,0 +1,7 @@
+{
+  "avoid_power_hands": true,
+  "endgame_search_limit": 10,
+  "power_cost_normal": 4,
+  "power_cost_threat": 1,
+  "lead_longer_tiebreak": true
+}

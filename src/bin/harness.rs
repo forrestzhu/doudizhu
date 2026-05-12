@@ -1,6 +1,9 @@
-use doudizhu::harness::{run_deal, run_scenario_file, run_seeded_games};
-use doudizhu::harness::{run_session_after_steps_with_config, run_trace_with_config};
-use doudizhu::RuleBasedPolicyConfig;
+use doudizhu::harness::run_session_after_steps_with_config;
+use doudizhu::harness::{
+    run_deal, run_random_tournament, run_scenario_file, run_seeded_games_with_landlord_policy,
+    run_trace_with_landlord_policy, LandlordPolicy,
+};
+use doudizhu::{RuleBasedPolicyConfig, StrategicPolicyConfig};
 use std::path::Path;
 
 fn main() {
@@ -9,9 +12,63 @@ fn main() {
     let seed = read_u64_arg(&args, "--seed").unwrap_or(1);
     let max_turns = read_usize_arg(&args, "--max-turns").unwrap_or(1_000);
     let format = read_arg(&args, "--format").unwrap_or("text");
+    let significance_threshold = read_f64_arg(&args, "--significance").unwrap_or(0.10);
+    let strategy_config = read_arg(&args, "--strategy-file")
+        .map(read_strategy_config)
+        .transpose()
+        .unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(2);
+        })
+        .unwrap_or_default();
     let policy_config = RuleBasedPolicyConfig {
         avoid_power_hands: !has_flag(&args, "--allow-power"),
     };
+    let landlord_policy = read_arg(&args, "--landlord-policy")
+        .map(parse_landlord_policy)
+        .transpose()
+        .unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(2);
+        })
+        .unwrap_or(LandlordPolicy::RuleBased);
+
+    if has_flag(&args, "--random-tournament") {
+        let report =
+            run_random_tournament(games, max_turns, strategy_config, significance_threshold)
+                .unwrap_or_else(|error| {
+                    eprintln!("random tournament error={error:?}");
+                    std::process::exit(1);
+                });
+
+        if format == "json" {
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        } else {
+            println!(
+                "random_tournament games={} random_source={} significance={:.2}",
+                report.games, report.random_source, report.conclusion.significance_threshold
+            );
+            for run in &report.runs {
+                println!(
+                    "placement={} wins={:?} landlord_win_rate={:.2} farmer_win_rate={:.2} avg_turns={:.2}",
+                    run.placement,
+                    run.wins,
+                    run.landlord_win_rate,
+                    run.farmer_win_rate,
+                    run.avg_turns
+                );
+            }
+            println!(
+                "conclusion landlord_delta={:.2} landlord_significant={} farmers_delta={:.2} farmers_significant={}",
+                report.conclusion.landlord_strategic_delta,
+                report.conclusion.landlord_strategic_significant,
+                report.conclusion.farmers_strategic_delta,
+                report.conclusion.farmers_strategic_significant
+            );
+        }
+
+        return;
+    }
 
     if has_flag(&args, "--deal") {
         let viewer = read_usize_arg(&args, "--viewer").unwrap_or(0);
@@ -56,10 +113,11 @@ fn main() {
 
     if has_flag(&args, "--trace") {
         let report =
-            run_trace_with_config(seed, max_turns, policy_config).unwrap_or_else(|error| {
-                eprintln!("trace seed={seed} error={error:?}");
-                std::process::exit(1);
-            });
+            run_trace_with_landlord_policy(seed, max_turns, policy_config, landlord_policy)
+                .unwrap_or_else(|error| {
+                    eprintln!("trace seed={seed} error={error:?}");
+                    std::process::exit(1);
+                });
 
         if format == "json" {
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
@@ -92,10 +150,11 @@ fn main() {
         std::process::exit(if report.pass { 0 } else { 1 });
     }
 
-    let report = run_seeded_games(seed, games, max_turns).unwrap_or_else(|error| {
-        eprintln!("error={error:?}");
-        std::process::exit(1);
-    });
+    let report = run_seeded_games_with_landlord_policy(seed, games, max_turns, landlord_policy)
+        .unwrap_or_else(|error| {
+            eprintln!("error={error:?}");
+            std::process::exit(1);
+        });
 
     if format == "json" {
         println!("{}", serde_json::to_string_pretty(&report).unwrap());
@@ -122,9 +181,19 @@ fn main() {
     }
 
     println!(
-        "summary games={} wins={:?} avg_turns={:.2}",
-        report.games, report.wins, report.avg_turns
+        "summary games={} landlord_policy={} wins={:?} avg_turns={:.2}",
+        report.games, report.landlord_policy, report.wins, report.avg_turns
     );
+}
+
+fn parse_landlord_policy(value: &str) -> Result<LandlordPolicy, String> {
+    match value {
+        "rule-based" | "rule_based" => Ok(LandlordPolicy::RuleBased),
+        "strategic" => Ok(LandlordPolicy::Strategic),
+        _ => Err(format!(
+            "unsupported landlord policy: {value}; expected rule-based or strategic"
+        )),
+    }
 }
 
 fn print_deal_report(report: &doudizhu::harness::DealReport) {
@@ -156,6 +225,10 @@ fn read_u64_arg(args: &[String], flag: &str) -> Option<u64> {
     read_arg(args, flag).and_then(|value| value.parse().ok())
 }
 
+fn read_f64_arg(args: &[String], flag: &str) -> Option<f64> {
+    read_arg(args, flag).and_then(|value| value.parse().ok())
+}
+
 fn read_arg<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.windows(2)
         .find(|window| window[0] == flag)
@@ -164,4 +237,11 @@ fn read_arg<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 
 fn has_flag(args: &[String], flag: &str) -> bool {
     args.iter().any(|arg| arg == flag)
+}
+
+fn read_strategy_config(path: &str) -> Result<StrategicPolicyConfig, String> {
+    let contents = std::fs::read_to_string(path)
+        .map_err(|error| format!("failed to read strategy file {path}: {error}"))?;
+    serde_json::from_str(&contents)
+        .map_err(|error| format!("failed to parse strategy file {path}: {error}"))
 }
