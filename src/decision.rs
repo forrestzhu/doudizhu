@@ -92,6 +92,8 @@ pub struct StrategicPolicyConfig {
     pub power_cost_normal: usize,
     pub power_cost_threat: usize,
     pub lead_longer_tiebreak: bool,
+    #[serde(default = "default_lead_tempo_plan_weight")]
+    pub lead_tempo_plan_weight: usize,
 }
 
 impl Default for StrategicPolicyConfig {
@@ -102,8 +104,13 @@ impl Default for StrategicPolicyConfig {
             power_cost_normal: 4,
             power_cost_threat: 1,
             lead_longer_tiebreak: true,
+            lead_tempo_plan_weight: default_lead_tempo_plan_weight(),
         }
     }
+}
+
+fn default_lead_tempo_plan_weight() -> usize {
+    1
 }
 
 pub fn legal_candidates(
@@ -415,6 +422,12 @@ fn choose_strategic_candidate(
         let stranded = stranded_single_risk(&remaining, &outside);
         let threat = opponent_threat_risk(hand, &remaining, view);
         let power_cost = strategic_power_cost(hand, &remaining, view, config);
+        let tempo_score = if view.previous_play.is_none() {
+            (plan_turns + control + stranded + threat + power_cost) * config.lead_tempo_plan_weight
+                + view.hand.len().saturating_sub(hand.cards.len())
+        } else {
+            plan_turns + control + stranded + threat + power_cost
+        };
         let length_tiebreak = if config.lead_longer_tiebreak && view.previous_play.is_none() {
             usize::MAX - hand.cards.len()
         } else {
@@ -422,7 +435,7 @@ fn choose_strategic_candidate(
         };
         (
             winning,
-            plan_turns + control + stranded + threat + power_cost,
+            tempo_score,
             control,
             stranded,
             power_cost,
@@ -576,7 +589,7 @@ fn immediate_threat_control_risk(
         .hand_counts
         .iter()
         .enumerate()
-        .filter(|(player, _)| *player != view.self_id.0)
+        .filter(|(player, _)| is_opponent(view.self_id.0, *player))
         .map(|(_, count)| *count)
         .min()
         .unwrap_or(usize::MAX);
@@ -611,7 +624,7 @@ fn strategic_power_cost(
         .hand_counts
         .iter()
         .enumerate()
-        .filter(|(player, _)| *player != view.self_id.0)
+        .filter(|(player, _)| is_opponent(view.self_id.0, *player))
         .map(|(_, count)| *count)
         .min()
         .unwrap_or(usize::MAX);
@@ -632,7 +645,7 @@ fn opponent_threat_risk(hand: &ClassifiedHand, remaining: &[Card], view: &Player
         .hand_counts
         .iter()
         .enumerate()
-        .filter(|(player, _)| *player != view.self_id.0)
+        .filter(|(player, _)| is_opponent(view.self_id.0, *player))
         .map(|(_, count)| *count)
         .min()
         .unwrap_or(usize::MAX);
@@ -641,6 +654,14 @@ fn opponent_threat_risk(hand: &ClassifiedHand, remaining: &[Card], view: &Player
         (1, HandKind::Single) => 5,
         (2, HandKind::Pair) => 3,
         _ => 0,
+    }
+}
+
+fn is_opponent(self_id: usize, player: usize) -> bool {
+    if self_id == 0 {
+        player != 0
+    } else {
+        player == 0
     }
 }
 
@@ -832,6 +853,26 @@ mod tests {
         assert_eq!(
             policy.decide(&view, &rules),
             Decision::Play(vec![card(Rank::Ace, Suit::Clubs)])
+        );
+    }
+
+    #[test]
+    fn strategic_policy_farmer_does_not_treat_ally_as_threat() {
+        let rules = BasicRules;
+        let previous_play = rules.classify(&[card(Rank::Seven, Suit::Clubs)]);
+        let view = PlayerView {
+            self_id: crate::engine::PlayerId(1),
+            hand: vec![card(Rank::Eight, Suit::Clubs), card(Rank::Ace, Suit::Clubs)],
+            hand_counts: vec![5, 2, 1],
+            relationships: Vec::new(),
+            history: Vec::new(),
+            previous_play,
+        };
+        let mut policy = StrategicPolicy::default();
+
+        assert_eq!(
+            policy.decide(&view, &rules),
+            Decision::Play(vec![card(Rank::Eight, Suit::Clubs)])
         );
     }
 
