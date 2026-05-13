@@ -1,4 +1,4 @@
-use doudizhu::arena::run_session_after_steps_with_config;
+use doudizhu::arena::run_session_after_steps_with_landlord_policy;
 use doudizhu::arena::{
     run_deal, run_random_tournament, run_random_tournament_from_source,
     run_random_tournament_from_source_opt, run_scenario_file,
@@ -144,12 +144,19 @@ fn main() {
     if has_flag(&args, "--session") {
         let viewer = read_usize_arg(&args, "--viewer").unwrap_or(0);
         let steps = read_usize_arg(&args, "--steps").unwrap_or(0);
-        let report =
-            run_session_after_steps_with_config(seed, viewer, steps, max_turns, policy_config)
-                .unwrap_or_else(|error| {
-                    eprintln!("session seed={seed} viewer={viewer} error={error:?}");
-                    std::process::exit(1);
-                });
+        let report = run_session_after_steps_with_landlord_policy(
+            seed,
+            viewer,
+            steps,
+            max_turns,
+            policy_config,
+            landlord_policy,
+            strategy_config,
+        )
+        .unwrap_or_else(|error| {
+            eprintln!("session seed={seed} viewer={viewer} error={error:?}");
+            std::process::exit(1);
+        });
 
         if format == "json" {
             println!("{}", serde_json::to_string_pretty(&report).unwrap());

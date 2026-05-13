@@ -9,7 +9,11 @@
     "stranded_risk_weight": 0,
     "opponent_urgency_weight": 1,
     "hand_control_weight": 2,
-    "farmer_cooperation_weight": 3
+    "farmer_cooperation_weight": 3,
+    "decomposition_weight": 1,
+    "pass_value_weight": 0,
+    "sequence_lookahead": true,
+    "bomb_control_bonus": 5
   },
   "sender": {
     "avoid_power_hands": true,
@@ -21,7 +25,11 @@
     "stranded_risk_weight": 1,
     "opponent_urgency_weight": 1,
     "hand_control_weight": 2,
-    "farmer_cooperation_weight": 3
+    "farmer_cooperation_weight": 3,
+    "decomposition_weight": 1,
+    "pass_value_weight": 2,
+    "sequence_lookahead": true,
+    "bomb_control_bonus": 5
   },
   "blocker": {
     "avoid_power_hands": true,
@@ -33,6 +41,10 @@
     "stranded_risk_weight": 1,
     "opponent_urgency_weight": 1,
     "hand_control_weight": 2,
-    "farmer_cooperation_weight": 3
+    "farmer_cooperation_weight": 3,
+    "decomposition_weight": 1,
+    "pass_value_weight": 2,
+    "sequence_lookahead": true,
+    "bomb_control_bonus": 5
   }
 }

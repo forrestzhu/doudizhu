@@ -92,6 +92,7 @@ pub enum PolicyPlacement {
     AllRuleBased,
     LandlordStrategic,
     FarmersStrategic,
+    AllStrategic,
 }
 
 impl PolicyPlacement {
@@ -100,6 +101,7 @@ impl PolicyPlacement {
             Self::AllRuleBased => "all_rule_based",
             Self::LandlordStrategic => "landlord_strategic",
             Self::FarmersStrategic => "farmers_strategic",
+            Self::AllStrategic => "all_strategic",
         }
     }
 }
@@ -471,6 +473,12 @@ pub fn run_random_tournament_from_source(
         PolicyPlacement::FarmersStrategic,
         strategy,
     )?;
+    let all_strategic = run_policy_placement_games(
+        &deal_seeds,
+        max_turns,
+        PolicyPlacement::AllStrategic,
+        strategy,
+    )?;
 
     let landlord_strategic_delta =
         landlord_strategic.landlord_win_rate - baseline.landlord_win_rate;
@@ -483,7 +491,12 @@ pub fn run_random_tournament_from_source(
         games,
         deal_seeds,
         strategy,
-        runs: vec![baseline, landlord_strategic, farmers_strategic],
+        runs: vec![
+            baseline,
+            landlord_strategic,
+            farmers_strategic,
+            all_strategic,
+        ],
         conclusion: TournamentConclusion {
             significance_threshold,
             landlord_strategic_delta,
@@ -719,6 +732,7 @@ pub fn run_random_tournament_from_source_opt(
         let baseline = run_fn(&deal_seeds, PolicyPlacement::AllRuleBased)?;
         let landlord_strategic = run_fn(&deal_seeds, PolicyPlacement::LandlordStrategic)?;
         let farmers_strategic = run_fn(&deal_seeds, PolicyPlacement::FarmersStrategic)?;
+        let all_strategic = run_fn(&deal_seeds, PolicyPlacement::AllStrategic)?;
 
         let landlord_strategic_delta =
             landlord_strategic.landlord_win_rate - baseline.landlord_win_rate;
@@ -731,7 +745,12 @@ pub fn run_random_tournament_from_source_opt(
             games,
             deal_seeds,
             strategy,
-            runs: vec![baseline, landlord_strategic, farmers_strategic],
+            runs: vec![
+                baseline,
+                landlord_strategic,
+                farmers_strategic,
+                all_strategic,
+            ],
             conclusion: TournamentConclusion {
                 significance_threshold,
                 landlord_strategic_delta,
@@ -748,6 +767,7 @@ pub fn run_random_tournament_from_source_opt(
     let baseline_pilot = run_fn(pilot_seeds, PolicyPlacement::AllRuleBased)?;
     let landlord_pilot = run_fn(pilot_seeds, PolicyPlacement::LandlordStrategic)?;
     let farmers_pilot = run_fn(pilot_seeds, PolicyPlacement::FarmersStrategic)?;
+    let all_strategic_pilot = run_fn(pilot_seeds, PolicyPlacement::AllStrategic)?;
 
     let landlord_regression = baseline_pilot.landlord_win_rate - landlord_pilot.landlord_win_rate;
     let farmers_regression = baseline_pilot.farmer_win_rate - farmers_pilot.farmer_win_rate;
@@ -764,7 +784,12 @@ pub fn run_random_tournament_from_source_opt(
             games: pilot_games,
             deal_seeds: pilot_seeds.to_vec(),
             strategy,
-            runs: vec![baseline_pilot, landlord_pilot, farmers_pilot],
+            runs: vec![
+                baseline_pilot,
+                landlord_pilot,
+                farmers_pilot,
+                all_strategic_pilot,
+            ],
             conclusion: TournamentConclusion {
                 significance_threshold,
                 landlord_strategic_delta: landlord_delta,
@@ -779,10 +804,12 @@ pub fn run_random_tournament_from_source_opt(
     let baseline_rest = run_fn(rest_seeds, PolicyPlacement::AllRuleBased)?;
     let landlord_rest = run_fn(rest_seeds, PolicyPlacement::LandlordStrategic)?;
     let farmers_rest = run_fn(rest_seeds, PolicyPlacement::FarmersStrategic)?;
+    let all_strategic_rest = run_fn(rest_seeds, PolicyPlacement::AllStrategic)?;
 
     let baseline = merge_run_reports(&baseline_pilot, &baseline_rest);
     let landlord_strategic = merge_run_reports(&landlord_pilot, &landlord_rest);
     let farmers_strategic = merge_run_reports(&farmers_pilot, &farmers_rest);
+    let all_strategic = merge_run_reports(&all_strategic_pilot, &all_strategic_rest);
 
     let landlord_strategic_delta =
         landlord_strategic.landlord_win_rate - baseline.landlord_win_rate;
@@ -795,7 +822,12 @@ pub fn run_random_tournament_from_source_opt(
         games,
         deal_seeds,
         strategy,
-        runs: vec![baseline, landlord_strategic, farmers_strategic],
+        runs: vec![
+            baseline,
+            landlord_strategic,
+            farmers_strategic,
+            all_strategic,
+        ],
         conclusion: TournamentConclusion {
             significance_threshold,
             landlord_strategic_delta,
@@ -897,13 +929,41 @@ pub fn run_session_after_steps_with_config(
     max_turns: usize,
     policy_config: RuleBasedPolicyConfig,
 ) -> Result<SessionReport, ArenaError> {
+    run_session_after_steps_with_landlord_policy(
+        seed,
+        viewer,
+        steps,
+        max_turns,
+        policy_config,
+        LandlordPolicy::RuleBased,
+        RoleStrategyConfig::default(),
+    )
+}
+
+pub fn run_session_after_steps_with_landlord_policy(
+    seed: u64,
+    viewer: usize,
+    steps: usize,
+    max_turns: usize,
+    rule_config: RuleBasedPolicyConfig,
+    landlord_policy: LandlordPolicy,
+    strategy_config: RoleStrategyConfig,
+) -> Result<SessionReport, ArenaError> {
     let deal = Deal::from_seed(seed, 3);
     let config = GameConfig {
         max_turns,
         ..GameConfig::default()
     };
     let mut game = Game::new(deal, config)?;
-    let mut policies = rule_based_policies(3, policy_config);
+    let landlord: Box<dyn DecisionPolicy> = match landlord_policy {
+        LandlordPolicy::RuleBased => Box::new(RuleBasedPolicy::new(rule_config)),
+        LandlordPolicy::Strategic => Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+    };
+    let mut policies: Vec<Box<dyn DecisionPolicy>> = vec![
+        landlord,
+        Box::new(RuleBasedPolicy::new(rule_config)),
+        Box::new(RuleBasedPolicy::new(rule_config)),
+    ];
     for _ in 0..steps {
         if game.finished() {
             break;
@@ -1173,6 +1233,11 @@ fn placement_policies(
         ],
         PolicyPlacement::FarmersStrategic => vec![
             Box::new(RuleBasedPolicy::new(rule_config)),
+            Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+            Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+        ],
+        PolicyPlacement::AllStrategic => vec![
+            Box::new(StrategicPolicy::from_role_configs(strategy_config)),
             Box::new(StrategicPolicy::from_role_configs(strategy_config)),
             Box::new(StrategicPolicy::from_role_configs(strategy_config)),
         ],
@@ -1454,7 +1519,12 @@ mod tests {
                 .iter()
                 .map(|run| run.placement.as_str())
                 .collect::<Vec<_>>(),
-            ["all_rule_based", "landlord_strategic", "farmers_strategic"]
+            [
+                "all_rule_based",
+                "landlord_strategic",
+                "farmers_strategic",
+                "all_strategic"
+            ]
         );
         assert!(report
             .runs

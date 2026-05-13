@@ -25,9 +25,8 @@ test.describe('Electron auto-play table', () => {
     await expect(page.locator('#roundMeta')).toContainText('Seed 42');
     await expect(page.locator('#roundMeta')).toContainText('game-');
     await expect(page.locator('#viewerText')).toHaveText('玩家 0 视角 · 地主');
-    await expect(page.locator('#currentPlayerText')).toHaveText('当前玩家 0');
-    await expect(page.locator('#winnerText')).toHaveText('胜者 未定');
-    await expect(page.locator('#previousPlay')).toHaveText('上一手：无');
+    await expect(page.locator('#currentPlayerText')).toHaveText('轮到 玩家 0');
+    await expect(page.locator('#winnerOverlay')).toBeHidden();
 
     await expect(page.locator('#player0 .seat-header h2')).toHaveText('玩家 0');
     await expect(page.locator('#player0 .role-badge')).toHaveText('地主');
@@ -97,15 +96,15 @@ test.describe('Electron auto-play table', () => {
     await expect(page.locator('#player2 .hinted-card')).toHaveCount(0);
   });
 
-  test('single step appends public history and previous play', async () => {
+  test('single step appends public history and updates play zone', async () => {
     await expect(page.locator('#historyList .history-item')).toHaveCount(0);
 
     await page.getByRole('button', { name: '单步' }).click();
     await expect(page.locator('#statusText')).toHaveText('已单步');
     await expect(page.locator('#historyList .history-item')).toHaveCount(1);
-    await expect(page.locator('#historyList')).toContainText('#1 玩家 0 出牌 Single');
-    await expect(page.locator('#previousPlay')).toContainText('上一手：玩家 0 出牌 Single');
-    await expect(page.locator('#currentPlayerText')).toHaveText('当前玩家 1');
+    await expect(page.locator('#historyList')).toContainText('#1 玩家 0 出牌 Straight');
+    await expect(page.locator('#play0 .card')).toHaveCount(6);
+    await expect(page.locator('#currentPlayerText')).toHaveText('轮到 玩家 1');
   });
 
   test('autoplay grows public history', async () => {
@@ -119,13 +118,12 @@ test.describe('Electron auto-play table', () => {
   test('autoplay completes the seed 42 game', async () => {
     await page.locator('#autoplayToggle').check();
 
-    await expect(page.locator('#winnerText')).toHaveText('胜者 玩家 0', {
+    await expect(page.locator('#winnerTitle')).toHaveText('玩家 0 获胜', {
       timeout: 45_000,
     });
     await expect(page.locator('#autoplayToggle')).not.toBeChecked();
-    await expect(page.locator('#historyList .history-item')).toHaveCount(67);
+    await expect(page.locator('#historyList .history-item')).toHaveCount(25);
     await expect(page.locator('#player0 .card[aria-label]')).toHaveCount(0);
-    await expect(page.locator('#previousPlay')).toContainText('上一手：玩家 0 出牌 Single');
   });
 
   test('redeals a different deterministic seed from the toolbar', async () => {

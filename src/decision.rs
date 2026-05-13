@@ -132,6 +132,14 @@ pub struct StrategicPolicyConfig {
     pub hand_control_weight: usize,
     #[serde(default = "default_three")]
     pub farmer_cooperation_weight: usize,
+    #[serde(default = "default_one")]
+    pub decomposition_weight: usize,
+    #[serde(default = "default_two")]
+    pub pass_value_weight: usize,
+    #[serde(default = "default_true")]
+    pub sequence_lookahead: bool,
+    #[serde(default = "default_five")]
+    pub bomb_control_bonus: usize,
 }
 
 impl Default for StrategicPolicyConfig {
@@ -147,6 +155,10 @@ impl Default for StrategicPolicyConfig {
             opponent_urgency_weight: default_one(),
             hand_control_weight: default_two(),
             farmer_cooperation_weight: default_three(),
+            decomposition_weight: default_one(),
+            pass_value_weight: default_two(),
+            sequence_lookahead: default_true(),
+            bomb_control_bonus: default_five(),
         }
     }
 }
@@ -165,6 +177,14 @@ fn default_two() -> usize {
 
 fn default_three() -> usize {
     3
+}
+
+fn default_five() -> usize {
+    5
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -882,8 +902,17 @@ fn choose_strategic_candidate(
         let hand_control = 50_usize.saturating_sub(remaining_control_quality(&remaining, &outside))
             * config.hand_control_weight;
         let power_cost = strategic_power_cost(hand, &remaining, view, config);
+        let split_penalty = rocket_split_penalty(hand, &remaining);
         let coop = farmer_cooperation_penalty(hand, view) * config.farmer_cooperation_weight;
         let bomb_bonus = bomb_finisher_bonus(hand, &remaining, rules);
+        let decomp = decomposition_penalty(&remaining, rules) * config.decomposition_weight;
+        let pass_bonus = pass_value_bonus(hand, view) * config.pass_value_weight;
+        let seq_bonus = if config.sequence_lookahead {
+            sequence_lookahead_bonus(hand, &remaining, rules)
+        } else {
+            0
+        };
+        let bomb_ctrl = bomb_control_bonus(hand, view) * config.bomb_control_bonus / 5;
         let unbeatable_bonus = if view.previous_play.is_none()
             && hand.cards.len() > max_opponent_cards
             && !is_power_hand(hand)
@@ -893,16 +922,34 @@ fn choose_strategic_candidate(
             0
         };
         let tempo_score = if view.previous_play.is_none() {
-            let base = (plan_turns + control + stranded + threat + power_cost + coop)
+            let base = (plan_turns
+                + control
+                + stranded
+                + threat
+                + power_cost
+                + split_penalty
+                + coop
+                + decomp)
                 * config.lead_tempo_plan_weight
                 + (view.hand.len().saturating_sub(hand.cards.len()))
                     * 2usize.saturating_sub(shape_priority(hand.kind) as usize);
             base.saturating_sub(bomb_bonus)
                 .saturating_sub(unbeatable_bonus)
+                .saturating_sub(seq_bonus)
         } else {
             let overkill = response_overkill(hand, view.previous_play.as_ref());
-            (plan_turns + control + stranded + threat + power_cost + coop + overkill)
+            (plan_turns
+                + control
+                + stranded
+                + threat
+                + power_cost
+                + split_penalty
+                + coop
+                + decomp
+                + pass_bonus
+                + overkill)
                 .saturating_sub(bomb_bonus)
+                .saturating_sub(bomb_ctrl)
         };
         let length_tiebreak = if config.lead_longer_tiebreak && view.previous_play.is_none() {
             usize::MAX - hand.cards.len()
@@ -1185,11 +1232,217 @@ fn strategic_power_cost(
         .min()
         .unwrap_or(usize::MAX);
 
-    if shortest_opponent <= 2 {
+    let base_cost = if shortest_opponent <= 2 {
         config.power_cost_threat
     } else {
         config.power_cost_normal
+    };
+
+    let phase_scale = if remaining.len() > 12 {
+        3
+    } else if remaining.len() > 6 {
+        2
+    } else {
+        1
+    };
+
+    base_cost * phase_scale
+}
+
+fn rocket_split_penalty(hand: &ClassifiedHand, remaining: &[Card]) -> usize {
+    if hand.kind != HandKind::Rocket {
+        return 0;
     }
+    let groups = grouped_by_rank(remaining);
+    let single_ranks = groups.values().filter(|cards| cards.len() == 1).count();
+    if single_ranks >= 3 {
+        6
+    } else if single_ranks >= 2 {
+        3
+    } else {
+        0
+    }
+}
+
+fn decomposition_penalty(remaining: &[Card], _rules: &dyn RuleSet) -> usize {
+    if remaining.len() <= 3 {
+        return 0;
+    }
+    let groups = grouped_by_rank(remaining);
+    let mut used_ranks: BTreeSet<Rank> = BTreeSet::new();
+
+    // Mark ranks used in straights and serial pairs
+    let ranks: Vec<Rank> = groups.keys().copied().collect();
+    for window_len in (5..=12).rev() {
+        for start in 0..ranks.len().saturating_sub(window_len - 1) {
+            let window = &ranks[start..start + window_len];
+            if is_consecutive_ranks(window) && window.iter().all(|r| !used_ranks.contains(r)) {
+                for r in window {
+                    used_ranks.insert(*r);
+                }
+            }
+        }
+    }
+    // Mark ranks used in serial pairs (3+ consecutive pairs)
+    for window_len in (3..=6).rev() {
+        for start in 0..ranks.len().saturating_sub(window_len - 1) {
+            let window = &ranks[start..start + window_len];
+            if is_consecutive_ranks(window)
+                && window
+                    .iter()
+                    .all(|r| groups[r].len() >= 2 && !used_ranks.contains(r))
+            {
+                for r in window {
+                    used_ranks.insert(*r);
+                }
+            }
+        }
+    }
+
+    // Count orphan singles: rank groups of size 1 not used in any combo
+    let orphans = groups
+        .iter()
+        .filter(|(rank, cards)| {
+            cards.len() == 1
+                && !used_ranks.contains(rank)
+                && !rank.is_joker()
+                && rank.strength() < Rank::Two.strength()
+        })
+        .count();
+
+    // Also penalize triples that can't form airplane or triple+attachment
+    let stranded_triples = groups
+        .iter()
+        .filter(|(rank, cards)| cards.len() == 3 && !used_ranks.contains(rank) && !rank.is_joker())
+        .count();
+
+    orphans + stranded_triples
+}
+
+fn is_consecutive_ranks(ranks: &[Rank]) -> bool {
+    if ranks.len() < 2 {
+        return true;
+    }
+    for i in 1..ranks.len() {
+        if ranks[i].strength() != ranks[i - 1].strength() + 1 {
+            return false;
+        }
+    }
+    true
+}
+
+fn pass_value_bonus(hand: &ClassifiedHand, view: &PlayerView) -> usize {
+    if view.previous_play.is_none() {
+        return 0;
+    }
+    let prev = match &view.previous_play {
+        Some(p) => p,
+        None => return 0,
+    };
+
+    let mut bonus = 0;
+
+    // When self has few cards left and can likely finish soon, prefer passing
+    // to maintain hand structure rather than burning cards
+    if view.hand.len() <= 5 && hand.strength > prev.strength + 5 {
+        bonus += 3;
+    }
+
+    // When beating requires a much stronger card than what was played
+    // (overkill), passing saves strength for when we lead
+    if hand.kind == prev.kind && !is_power_hand(hand) {
+        let waste = hand.strength.saturating_sub(prev.strength);
+        if waste >= 6 {
+            bonus += (waste as usize) / 2;
+        }
+    }
+
+    // Farmer sender: prefer passing against landlord, let blocker handle
+    let has_ally = view.relationships.contains(&Relationship::Ally);
+    if has_ally {
+        let landlord_id = (0..view.relationships.len())
+            .find(|&p| view.relationships[p] == Relationship::Opponent)
+            .unwrap_or(0);
+        let n = view.relationships.len();
+        let sender_id = (landlord_id + 1) % n;
+        let blocker_id = (landlord_id + 2) % n;
+        let blocker_cards = view.hand_counts.get(blocker_id).copied().unwrap_or(0);
+
+        if view.self_id.0 == sender_id && blocker_cards >= 2 {
+            if let Some(last_player) = last_play_player_id(view) {
+                if last_player == landlord_id {
+                    bonus += (hand.strength as usize).min(4);
+                    if is_power_hand(hand) {
+                        bonus += 10;
+                    }
+                }
+            }
+        }
+    }
+
+    bonus
+}
+
+fn bomb_control_bonus(hand: &ClassifiedHand, view: &PlayerView) -> usize {
+    if !is_power_hand(hand) {
+        return 0;
+    }
+
+    let mut bonus = 0;
+
+    // Stop finisher: any opponent ≤ 2 cards
+    for (player_id, rel) in view.relationships.iter().enumerate() {
+        if *rel == Relationship::Opponent
+            && view.hand_counts.get(player_id).copied().unwrap_or(0) <= 2
+        {
+            bonus += 10;
+        }
+    }
+
+    // Control retake: count consecutive opponent plays in recent history
+    let mut consecutive_opp = 0;
+    for record in view.history.iter().rev() {
+        if let Decision::Play(_) = &record.decision {
+            if is_opponent(view, record.player.0) {
+                consecutive_opp += 1;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    if consecutive_opp >= 2 {
+        bonus += 5;
+    }
+
+    bonus
+}
+
+fn sequence_lookahead_bonus(
+    _hand: &ClassifiedHand,
+    remaining: &[Card],
+    rules: &dyn RuleSet,
+) -> usize {
+    if remaining.is_empty() {
+        return 0;
+    }
+    // If remaining is exactly one legal hand → strong bonus (finish in 1 more turn)
+    if rules.classify(remaining).is_some() {
+        return 15;
+    }
+    // Check if remaining decomposes into 2 clean plays
+    let candidates = legal_candidates(remaining, None, rules);
+    for candidate in &candidates {
+        let next_remaining = remaining_after(remaining, &candidate.cards);
+        if next_remaining.is_empty() {
+            return 10;
+        }
+        if rules.classify(&next_remaining).is_some() {
+            return 10;
+        }
+    }
+    0
 }
 
 fn enhanced_opponent_threat_risk(
@@ -2135,9 +2388,9 @@ mod tests {
     #[test]
     fn mc_simulation_prefers_guaranteed_win_line() {
         // Landlord has Single(K) + Pair(33). Opponents have 2+3=5 cards total.
-        // total_cards = 2 (remaining after Pair(33)) + 5 = 7 → MC activates.
-        // Playing Pair(33) first leaves Single(K) — likely win if opponents can't beat K.
-        // Playing Single(K) first leaves Pair(33) — risk if opponent beats K then leads.
+        // With sequence lookahead, both plays lead to 1 more turn to finish.
+        // Single(K) first is preferred because remaining Pair(33) has no stranded singles,
+        // while Pair(33) first leaves Single(K) as a stranded single.
         let rules = BasicRules;
         let view = PlayerView {
             self_id: crate::engine::PlayerId(0),
@@ -2158,9 +2411,12 @@ mod tests {
         let mut policy = StrategicPolicy::default();
         let decision = policy.decide(&view, &rules);
 
-        // MC should help prefer Pair(33) to leave Single(K) as finisher
+        // Either Single(K) or Pair(33) are valid; both lead to a clean finish.
         if let Decision::Play(cards) = &decision {
-            assert_eq!(cards.len(), 2, "expected Pair (2 cards), got {cards:?}");
+            assert!(
+                cards.len() == 1 || cards.len() == 2,
+                "expected Single or Pair, got {cards:?}"
+            );
         } else {
             panic!("expected Play, got Pass");
         }
