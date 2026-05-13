@@ -1,9 +1,9 @@
 use doudizhu::arena::run_session_after_steps_with_landlord_policy;
 use doudizhu::arena::{
-    run_deal, run_random_tournament, run_random_tournament_from_source,
+    run_cross_placement_games, run_deal, run_random_tournament, run_random_tournament_from_source,
     run_random_tournament_from_source_opt, run_scenario_file,
     run_seeded_games_with_landlord_policy, run_trace_with_landlord_policy, LandlordPolicy,
-    TournamentOptions,
+    PolicyPlacement, TournamentOptions,
 };
 use doudizhu::{RoleStrategyConfig, RuleBasedPolicyConfig, StrategicPolicyConfig};
 use std::path::Path;
@@ -24,6 +24,13 @@ fn main() {
         })
         .unwrap_or_default();
     apply_strategy_overrides(&args, &mut strategy_config);
+    let baseline_config = read_arg(&args, "--baseline-strategy-file")
+        .map(read_strategy_config)
+        .transpose()
+        .unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(2);
+        });
     let policy_config = RuleBasedPolicyConfig {
         avoid_power_hands: !has_flag(&args, "--allow-power"),
     };
@@ -120,6 +127,57 @@ fn main() {
                 report.conclusion.farmers_strategic_delta,
                 report.conclusion.farmers_strategic_significant
             );
+        }
+
+        // Cross-version A/B testing when baseline strategy file is provided
+        if let Some(ref baseline) = baseline_config {
+            let deal_seeds = &report.deal_seeds;
+            let ll_new = run_cross_placement_games(
+                deal_seeds,
+                max_turns,
+                PolicyPlacement::LandlordNewFarmersOld,
+                strategy_config,
+                *baseline,
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("cross-version error={error:?}");
+                std::process::exit(1);
+            });
+            let ll_old = run_cross_placement_games(
+                deal_seeds,
+                max_turns,
+                PolicyPlacement::LandlordOldFarmersNew,
+                strategy_config,
+                *baseline,
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("cross-version error={error:?}");
+                std::process::exit(1);
+            });
+            if format == "json" {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&vec![&ll_new, &ll_old]).unwrap()
+                );
+            } else {
+                println!("--- cross-version A/B ---");
+                for run in &[&ll_new, &ll_old] {
+                    println!(
+                        "placement={} wins={:?} landlord_win_rate={:.2} farmer_win_rate={:.2} avg_turns={:.2}",
+                        run.placement,
+                        run.wins,
+                        run.landlord_win_rate,
+                        run.farmer_win_rate,
+                        run.avg_turns
+                    );
+                }
+                let landlord_delta = ll_new.landlord_win_rate - ll_old.landlord_win_rate;
+                let farmer_delta = ll_new.farmer_win_rate - ll_old.farmer_win_rate;
+                println!(
+                    "cross_conclusion v6_landlord_delta={:.2} v6_farmer_delta={:.2}",
+                    landlord_delta, farmer_delta
+                );
+            }
         }
 
         return;

@@ -1,0 +1,38 @@
+{
+  "landlord": {
+    "avoid_power_hands": true,
+    "endgame_search_limit": 10,
+    "power_cost_normal": 4,
+    "power_cost_threat": 1,
+    "lead_longer_tiebreak": true,
+    "lead_tempo_plan_weight": 1,
+    "stranded_risk_weight": 0,
+    "opponent_urgency_weight": 1,
+    "hand_control_weight": 2,
+    "farmer_cooperation_weight": 3
+  },
+  "sender": {
+    "avoid_power_hands": true,
+    "endgame_search_limit": 10,
+    "power_cost_normal": 4,
+    "power_cost_threat": 1,
+    "lead_longer_tiebreak": true,
+    "lead_tempo_plan_weight": 1,
+    "stranded_risk_weight": 1,
+    "opponent_urgency_weight": 1,
+    "hand_control_weight": 2,
+    "farmer_cooperation_weight": 3
+  },
+  "blocker": {
+    "avoid_power_hands": true,
+    "endgame_search_limit": 10,
+    "power_cost_normal": 4,
+    "power_cost_threat": 1,
+    "lead_longer_tiebreak": true,
+    "lead_tempo_plan_weight": 1,
+    "stranded_risk_weight": 1,
+    "opponent_urgency_weight": 1,
+    "hand_control_weight": 2,
+    "farmer_cooperation_weight": 3
+  }
+}

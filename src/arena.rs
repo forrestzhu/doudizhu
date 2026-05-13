@@ -93,6 +93,8 @@ pub enum PolicyPlacement {
     LandlordStrategic,
     FarmersStrategic,
     AllStrategic,
+    LandlordNewFarmersOld,
+    LandlordOldFarmersNew,
 }
 
 impl PolicyPlacement {
@@ -102,6 +104,8 @@ impl PolicyPlacement {
             Self::LandlordStrategic => "landlord_strategic",
             Self::FarmersStrategic => "farmers_strategic",
             Self::AllStrategic => "all_strategic",
+            Self::LandlordNewFarmersOld => "landlord_v6_farmers_v5",
+            Self::LandlordOldFarmersNew => "landlord_v5_farmers_v6",
         }
     }
 }
@@ -526,7 +530,7 @@ fn run_policy_placement_games(
         };
         let mut game = Game::new(deal, config)?;
         let mut policies =
-            placement_policies(placement, RuleBasedPolicyConfig::default(), strategy);
+            placement_policies(placement, RuleBasedPolicyConfig::default(), strategy, None);
 
         match game.run(&mut policies) {
             Ok(outcome) => {
@@ -548,6 +552,72 @@ fn run_policy_placement_games(
                     winner: None,
                     turns: game.history().len(),
                     history_hash: history_hash(game.history()),
+                    error: Some(format!("{error:?}")),
+                });
+            }
+        }
+    }
+
+    let games = deal_seeds.len();
+    let landlord_win_rate = wins[0] as f64 / games as f64;
+    let farmer_win_rate = (wins[1] + wins[2]) as f64 / games as f64;
+
+    Ok(TournamentRunReport {
+        placement: placement.name().to_string(),
+        games,
+        wins,
+        landlord_win_rate,
+        farmer_win_rate,
+        avg_turns: total_turns as f64 / games as f64,
+        reports,
+    })
+}
+
+pub fn run_cross_placement_games(
+    deal_seeds: &[u64],
+    max_turns: usize,
+    placement: PolicyPlacement,
+    strategy: RoleStrategyConfig,
+    baseline: RoleStrategyConfig,
+) -> Result<TournamentRunReport, ArenaError> {
+    let mut wins = vec![0usize; 3];
+    let mut reports = Vec::with_capacity(deal_seeds.len());
+    let mut total_turns = 0usize;
+
+    for (index, game_seed) in deal_seeds.iter().copied().enumerate() {
+        let deal = Deal::from_seed(game_seed, 3);
+        let config = GameConfig {
+            max_turns,
+            ..GameConfig::default()
+        };
+        let mut game = Game::new(deal, config)?;
+        let mut policies = placement_policies(
+            placement,
+            RuleBasedPolicyConfig::default(),
+            strategy,
+            Some(baseline),
+        );
+
+        match game.run(&mut policies) {
+            Ok(outcome) => {
+                wins[outcome.winner.0] += 1;
+                total_turns += outcome.turns;
+                reports.push(SeededGameReport {
+                    game: index + 1,
+                    seed: game_seed,
+                    winner: Some(outcome.winner.0),
+                    turns: outcome.turns,
+                    history_hash: history_hash(game.history()),
+                    error: None,
+                });
+            }
+            Err(error) => {
+                reports.push(SeededGameReport {
+                    game: index + 1,
+                    seed: game_seed,
+                    winner: None,
+                    turns: 0,
+                    history_hash: String::new(),
                     error: Some(format!("{error:?}")),
                 });
             }
@@ -610,7 +680,8 @@ fn run_policy_placement_games_parallel(
                             ..GameConfig::default()
                         };
                         let mut game = Game::new(deal, config).expect("valid deal");
-                        let mut policies = placement_policies(placement, rule_config, strategy);
+                        let mut policies =
+                            placement_policies(placement, rule_config, strategy, None);
 
                         match game.run(&mut policies) {
                             Ok(outcome) => {
@@ -1223,7 +1294,9 @@ fn placement_policies(
     placement: PolicyPlacement,
     rule_config: RuleBasedPolicyConfig,
     strategy_config: RoleStrategyConfig,
+    baseline_config: Option<RoleStrategyConfig>,
 ) -> Vec<Box<dyn DecisionPolicy>> {
+    let baseline = baseline_config.unwrap_or(strategy_config);
     match placement {
         PolicyPlacement::AllRuleBased => rule_based_policies(3, rule_config),
         PolicyPlacement::LandlordStrategic => vec![
@@ -1238,6 +1311,16 @@ fn placement_policies(
         ],
         PolicyPlacement::AllStrategic => vec![
             Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+            Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+            Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+        ],
+        PolicyPlacement::LandlordNewFarmersOld => vec![
+            Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+            Box::new(StrategicPolicy::from_role_configs(baseline)),
+            Box::new(StrategicPolicy::from_role_configs(baseline)),
+        ],
+        PolicyPlacement::LandlordOldFarmersNew => vec![
+            Box::new(StrategicPolicy::from_role_configs(baseline)),
             Box::new(StrategicPolicy::from_role_configs(strategy_config)),
             Box::new(StrategicPolicy::from_role_configs(strategy_config)),
         ],
