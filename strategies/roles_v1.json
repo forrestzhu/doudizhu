@@ -5,7 +5,7 @@
     "power_cost_normal": 4,
     "power_cost_threat": 1,
     "lead_longer_tiebreak": true,
-    "lead_tempo_plan_weight": 1,
+    "lead_tempo_plan_weight": 2,
     "stranded_risk_weight": 0,
     "opponent_urgency_weight": 1,
     "hand_control_weight": 2,
@@ -15,7 +15,7 @@
     "sequence_lookahead": true,
     "bomb_control_bonus": 5,
     "trump_conservation_weight": 1,
-    "opening_resilience_weight": 2,
+    "opening_resilience_weight": 1,
     "endgame_pair_preserve": 1
   },
   "sender": {
