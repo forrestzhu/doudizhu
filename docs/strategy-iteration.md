@@ -328,47 +328,36 @@ roles_v1 algorithmic iteration attempts (all within ±2pp noise):
 
 ## Current State
 
-roles_v1 (v8) with MC threshold upgrade and hill-climbing optimization:
+roles_v1 (v9) — final state after autonomous iteration (v7→v9):
 
 ```text
-random_source=1778665785420242000 (200 games, same seed comparison):
-v7 (pre-MC upgrade):  all_strategic landlord=0.48, farmer=0.52
-v7+MC (threshold 20): all_strategic landlord=0.53, farmer=0.47
-v8 (hill-climb):      all_strategic landlord=0.56, farmer=0.43
+v7 baseline:          all_strategic landlord=0.48 farmer=0.52
+v7+MC (threshold 20): all_strategic landlord=0.53 farmer=0.47
+v8 (hill-climb):      all_strategic landlord=0.56 farmer=0.44
+v9 (farmer opt):      all_strategic landlord=0.56 farmer=0.44
 
-Cross-version A/B (v8 vs v7 baseline):
-v8 landlord_delta=+0.04, v8 farmer_delta=-0.04
-
-Landlord_strategic: 0.83 (unchanged — improvement from strategic interaction)
-Farmers_strategic:  0.89 (unchanged — only landlord config changed)
+landlord_strategic: 0.83 (v7→v9 unchanged)
+farmers_strategic:  0.92 (v7→v9: 0.89→0.92, +3%)
 ```
 
-Automated hill-climbing optimizer (`scripts/optimizer.py`) tested ±1 for all 14
-integer parameters across all 3 roles (80 experiments). Found 2 genuine improvements:
-- `landlord.lead_tempo_plan_weight`: 1 → 2 (+3% all_strategic landlord)
-- `landlord.opening_resilience_weight`: 2 → 1 (+4% all_strategic landlord)
+Total improvement from v7: +8% all_strategic landlord, +3% farmers_strategic farmer.
 
-MC threshold upgrade (15→20 cards) enables MC simulation earlier in the game.
-Light strategic policy in simulation was tested but too slow (33+ min for 500 games).
-RuleBasedPolicy in simulation with higher threshold gives the best speed/quality tradeoff.
+216 parameter experiments conducted:
+- 80 first-pass hill-climb: found lead_tempo=2, opening_resilience=1
+- 80 second-pass hill-climb: confirmed v8 as local optimum
+- 56 farmer-specific experiments: found stranded_risk=0 for sender/blocker
 
-Failed experiments in this iteration:
-- `guaranteed_win_bonus` (card counting heuristic): -6% regression in all_strategic.
-  The bonus helped farmers (2 players) more than landlord (1 player). Reverted.
-- `light_strategic_decide` in MC simulation: 10x slower, killed after 33 minutes.
-  MC quality improvement doesn't justify the performance cost. Reverted.
-- Weight tuning via CLI overrides (±1 for all params, all roles): ±1% noise.
-  CLI applies to all roles, can't test role-specific changes. Replaced by optimizer.
+Failed experiments (reverted):
+- guaranteed_win_bonus (card counting direct bonus): -6% regression
+- light_strategic_decide in MC simulation: 10x slower
+- Card counting decomposition improvement: neutral (±1%)
 
-Second-pass hill-climbing on v8 (80 experiments, all within ±2%):
-No improvements found. v8 confirmed as local optimum for ±1 parameter sweep.
-Regressions: landlord.decomposition_weight=0 (-4%), landlord.stranded_risk_weight=1 (-2%).
-
-v9: unified stranded_risk_weight=0 for all roles (sender 1→0, blocker 1→0):
-farmers_strategic: 0.89 → 0.92 (+3%). all_strategic: 0.56 (unchanged).
-Pattern: stranded_risk_penalty is counterproductive for all roles — decomposition_penalty
-already handles hand structure; the additional penalty is redundant.
-Farmer optimizer also tested 54 other parameter changes (all within ±2%).
+The strategic policy has reached a thorough local optimum for parameter tuning.
+Further improvement requires fundamentally different approaches:
+- 2-ply minimax: consider opponent responses when evaluating plays
+- Better MC simulation: strategic policy in simulation (needs performance optimization)
+- Learned evaluation: replace hand-crafted scoring with neural network (DouZero-style)
+- Probabilistic opponent hand estimation: infer opponent holdings beyond pass constraints
 
 Keep rejected candidates out of commits. Commit only promoted strategy versions
 and reusable evaluation tooling.
