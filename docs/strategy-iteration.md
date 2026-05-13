@@ -5,15 +5,13 @@ continue after context is cleared.
 
 ## Current Champion
 
-Use `strategies/roles_v1.json` as the current best role-specific strategy (v8).
+Use `strategies/roles_v1.json` as the current best role-specific strategy (v9).
 
-The v8 config adds MC threshold upgrade and hill-climbing-optimized landlord params:
-- Landlord: `lead_tempo_plan_weight: 2` (was 1), `opening_resilience_weight: 1` (was 2)
-- Sender/Blocker: unchanged from v7
-- MC simulation threshold: 20 cards (was 15)
+The v9 config unifies stranded_risk_weight=0 for all roles plus v8 landlord optimizations:
+- All roles: `stranded_risk_weight: 0` (penalizing stranded singles is counterproductive)
+- Landlord: `lead_tempo_plan_weight: 2`, `opening_resilience_weight: 1`
+- MC simulation threshold: 20 cards
 - Architecture: `RoleStrategyConfig` with separate landlord/sender/blocker configs
-
-`strategies/strategic_v3.json` is retained for historical comparison (uniform config).
 
 Relevant commits:
 
@@ -361,6 +359,16 @@ Failed experiments in this iteration:
   MC quality improvement doesn't justify the performance cost. Reverted.
 - Weight tuning via CLI overrides (±1 for all params, all roles): ±1% noise.
   CLI applies to all roles, can't test role-specific changes. Replaced by optimizer.
+
+Second-pass hill-climbing on v8 (80 experiments, all within ±2%):
+No improvements found. v8 confirmed as local optimum for ±1 parameter sweep.
+Regressions: landlord.decomposition_weight=0 (-4%), landlord.stranded_risk_weight=1 (-2%).
+
+v9: unified stranded_risk_weight=0 for all roles (sender 1→0, blocker 1→0):
+farmers_strategic: 0.89 → 0.92 (+3%). all_strategic: 0.56 (unchanged).
+Pattern: stranded_risk_penalty is counterproductive for all roles — decomposition_penalty
+already handles hand structure; the additional penalty is redundant.
+Farmer optimizer also tested 54 other parameter changes (all within ±2%).
 
 Keep rejected candidates out of commits. Commit only promoted strategy versions
 and reusable evaluation tooling.
