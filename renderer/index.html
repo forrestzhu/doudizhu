@@ -7,57 +7,85 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="app-shell">
-      <header class="topbar">
-        <div>
+    <main class="game">
+      <header class="toolbar">
+        <div class="toolbar-brand">
           <h1>斗地主</h1>
-          <p id="roundMeta" class="round-meta">Seed 42</p>
+          <span id="roundMeta" class="meta"></span>
         </div>
-        <section class="controls" aria-label="发牌控制">
-          <label class="seed-field">
+        <nav class="toolbar-controls">
+          <label class="seed-wrap">
             <span>Seed</span>
             <input id="seedInput" type="number" min="0" step="1" value="42" />
           </label>
-          <div class="viewer-tabs" role="group" aria-label="视角">
-            <button class="viewer-tab active" data-viewer="0" type="button">玩家 0</button>
-            <button class="viewer-tab" data-viewer="1" type="button">玩家 1</button>
-            <button class="viewer-tab" data-viewer="2" type="button">玩家 2</button>
+          <div class="vtabs">
+            <button class="vtab active" data-viewer="0" type="button">玩家 0</button>
+            <button class="vtab" data-viewer="1" type="button">玩家 1</button>
+            <button class="vtab" data-viewer="2" type="button">玩家 2</button>
           </div>
-          <button id="dealButton" class="primary-action" type="button">重新发牌</button>
-          <button id="hintButton" class="secondary-action" type="button">提示</button>
-          <button id="stepButton" class="secondary-action" type="button">单步</button>
-          <label class="toggle-field">
+          <button id="dealButton" class="btn btn-gold" type="button">重新发牌</button>
+        </nav>
+      </header>
+
+      <section class="felt">
+        <div class="felt-top">
+          <div class="bottom-cards-section">
+            <span class="section-label">底牌</span>
+            <div id="bottomCards" class="card-row"></div>
+          </div>
+        </div>
+        <div class="felt-body">
+          <div class="side left">
+            <div class="seat" id="player1"></div>
+            <div class="play-zone" id="play1"></div>
+          </div>
+          <div class="center">
+            <div class="center-info">
+              <span id="statusText">准备</span>
+              <strong id="viewerText"></strong>
+            </div>
+            <div class="center-detail">
+              <span id="currentPlayerText"></span>
+              <span id="winnerText"></span>
+            </div>
+          </div>
+          <div class="side right">
+            <div class="play-zone" id="play2"></div>
+            <div class="seat" id="player2"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="bottom-bar">
+        <div class="play-zone self-play" id="play0"></div>
+        <nav class="action-row">
+          <button id="hintButton" class="btn btn-outline" type="button">提示</button>
+          <button id="stepButton" class="btn btn-outline" type="button">单步</button>
+          <label class="btn btn-toggle">
             <input id="autoplayToggle" type="checkbox" />
             <span>自动打牌</span>
           </label>
-        </section>
-      </header>
-
-      <section class="table" aria-label="牌桌">
-        <article class="seat seat-opponent seat-left" id="player1"></article>
-        <article class="seat seat-opponent seat-right" id="player2"></article>
-
-        <section class="center-panel" aria-label="桌面">
-          <div class="turn-strip">
-            <span id="statusText">准备</span>
-            <strong id="viewerText">玩家 0 视角</strong>
-          </div>
-          <div class="game-status" aria-label="对局状态">
-            <span id="currentPlayerText">当前玩家 0</span>
-            <span id="winnerText">胜者 未定</span>
-          </div>
-          <div class="bottom-zone">
-            <h2>底牌</h2>
-            <div id="bottomCards" class="cards bottom-cards"></div>
-          </div>
-          <section class="play-log" aria-label="公开历史">
-            <p id="previousPlay" class="previous-play">上一手：无</p>
-            <ol id="historyList" class="history-list"></ol>
-          </section>
-        </section>
-
-        <article class="seat seat-self" id="player0"></article>
+        </nav>
+        <div class="seat self-seat" id="player0"></div>
       </section>
+
+      <div class="overlay" id="winnerOverlay" hidden>
+        <div class="overlay-card">
+          <div class="overlay-icon" id="winnerIcon"></div>
+          <h2 id="winnerTitle"></h2>
+          <p id="winnerDetail"></p>
+          <button class="btn btn-gold" id="newGameBtn" type="button">再来一局</button>
+        </div>
+      </div>
+
+      <button class="history-trigger" id="historyTrigger" type="button">记录</button>
+      <aside class="drawer" id="historyDrawer" hidden>
+        <div class="drawer-head">
+          <h3>出牌记录</h3>
+          <button class="drawer-close" id="drawerClose" type="button"></button>
+        </div>
+        <ol id="historyList" class="history-list"></ol>
+      </aside>
     </main>
     <script src="./app.js"></script>
   </body>

@@ -110,6 +110,10 @@ function sessionReport(seed, viewer, steps) {
     String(viewer),
     '--steps',
     String(steps),
+    '--landlord-policy',
+    'strategic',
+    '--strategy-file',
+    path.join(projectRoot, 'strategies/roles_v1.json'),
     '--format',
     'json',
   ]);

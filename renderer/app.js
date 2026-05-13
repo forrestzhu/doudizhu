@@ -18,15 +18,27 @@ const elements = {
   viewerText: document.querySelector('#viewerText'),
   currentPlayerText: document.querySelector('#currentPlayerText'),
   winnerText: document.querySelector('#winnerText'),
-  previousPlay: document.querySelector('#previousPlay'),
   bottomCards: document.querySelector('#bottomCards'),
   historyList: document.querySelector('#historyList'),
-  viewerTabs: Array.from(document.querySelectorAll('.viewer-tab')),
+  viewerTabs: Array.from(document.querySelectorAll('.vtab')),
   players: [
     document.querySelector('#player0'),
     document.querySelector('#player1'),
     document.querySelector('#player2'),
   ],
+  playZones: [
+    document.querySelector('#play0'),
+    document.querySelector('#play1'),
+    document.querySelector('#play2'),
+  ],
+  winnerOverlay: document.querySelector('#winnerOverlay'),
+  winnerIcon: document.querySelector('#winnerIcon'),
+  winnerTitle: document.querySelector('#winnerTitle'),
+  winnerDetail: document.querySelector('#winnerDetail'),
+  newGameBtn: document.querySelector('#newGameBtn'),
+  historyTrigger: document.querySelector('#historyTrigger'),
+  historyDrawer: document.querySelector('#historyDrawer'),
+  drawerClose: document.querySelector('#drawerClose'),
 };
 
 const relationshipLabels = {
@@ -62,6 +74,14 @@ elements.seedInput.addEventListener('change', () => {
   state.seed = normalizedSeed();
   elements.seedInput.value = String(state.seed);
 });
+elements.newGameBtn.addEventListener('click', () => {
+  hideWinner();
+  startGame();
+});
+elements.historyTrigger.addEventListener('click', toggleHistory);
+elements.drawerClose.addEventListener('click', () => {
+  elements.historyDrawer.hidden = true;
+});
 
 for (const tab of elements.viewerTabs) {
   tab.addEventListener('click', () => switchViewer(Number(tab.dataset.viewer)));
@@ -73,6 +93,7 @@ async function startGame() {
   state.seed = normalizedSeed();
   state.hint = null;
   stopAutoplay();
+  hideWinner();
   setBusy(true, '发牌中');
   try {
     state.view = await window.doudizhu.startGame({
@@ -153,6 +174,7 @@ async function requestStep() {
     elements.statusText.textContent = '已单步';
     if (state.view.winner !== null && state.view.winner !== undefined) {
       stopAutoplay();
+      showWinner(state.view.winner);
     }
   } catch (error) {
     stopAutoplay();
@@ -188,6 +210,11 @@ function stopAutoplay() {
   elements.autoplayToggle.checked = false;
 }
 
+function toggleHistory() {
+  const drawer = elements.historyDrawer;
+  drawer.hidden = !drawer.hidden;
+}
+
 function render() {
   const view = state.view;
   if (!view) {
@@ -197,11 +224,11 @@ function render() {
   elements.roundMeta.textContent = `Seed ${view.seed} · ${view.game_id}`;
   const viewer = view.players.find((player) => player.id === view.viewer);
   elements.viewerText.textContent = `玩家 ${view.viewer} 视角 · ${roleLabel(viewer?.role)}`;
-  elements.currentPlayerText.textContent = `当前玩家 ${view.current_player}`;
-  elements.winnerText.textContent = view.winner === null || view.winner === undefined ? '胜者 未定' : `胜者 玩家 ${view.winner}`;
-  renderPreviousPlay(view.previous_play);
+  elements.currentPlayerText.textContent = view.winner == null ? `轮到 玩家 ${view.current_player}` : '';
+  elements.winnerText.textContent = '';
   renderBottomCards(view.bottom_cards);
   renderHistory(view.history);
+  renderPlayZones(view.history, view.viewer);
   setActiveViewer();
 
   const orderedPlayers = tableOrder(view.viewer);
@@ -212,17 +239,40 @@ function render() {
   }
 }
 
-function renderPreviousPlay(previousPlay) {
-  elements.previousPlay.replaceChildren();
-  if (!previousPlay) {
-    elements.previousPlay.textContent = '上一手：无';
-    return;
-  }
+function renderPlayZones(history, viewer) {
+  const lastPlays = lastPlayPerPlayer(history);
+  const ordered = tableOrder(viewer);
 
-  elements.previousPlay.append(
-    document.createTextNode(`上一手：玩家 ${previousPlay.player} ${actionLabel(previousPlay.action)} ${kindLabel(previousPlay.kind)} `),
-    cardCodesElement(previousPlay.cards),
-  );
+  for (let slot = 0; slot < 3; slot++) {
+    const playerId = ordered[slot];
+    const zone = elements.playZones[slot];
+    zone.replaceChildren();
+    zone.className = 'play-zone';
+
+    const play = lastPlays[playerId];
+    if (!play) {
+      continue;
+    }
+
+    if (play.action === 'pass') {
+      zone.classList.add('has-play');
+      zone.textContent = '不出';
+    } else {
+      zone.classList.add('has-play');
+      zone.append(...play.cards.map((c) => cardElement(c)));
+    }
+  }
+}
+
+function lastPlayPerPlayer(history) {
+  const result = {};
+  for (let i = history.length - 1; i >= 0; i--) {
+    const entry = history[i];
+    if (!(entry.player in result)) {
+      result[entry.player] = entry;
+    }
+  }
+  return result;
 }
 
 function renderBottomCards(cards) {
@@ -243,7 +293,7 @@ function renderHistory(history) {
     const item = document.createElement('li');
     item.className = 'history-item';
     const summary = document.createElement('span');
-    summary.textContent = `#${entry.turn} 玩家 ${entry.player} ${actionLabel(entry.action)} ${kindLabel(entry.kind)} · 剩 ${entry.hand_count_after}`;
+    summary.textContent = `#${entry.turn} 玩家 ${entry.player} ${actionLabel(entry.action)} ${kindLabel(entry.kind)}`;
     item.append(summary, cardCodesElement(entry.cards));
     elements.historyList.append(item);
   }
@@ -361,6 +411,24 @@ function setActiveViewer() {
   for (const tab of elements.viewerTabs) {
     tab.classList.toggle('active', Number(tab.dataset.viewer) === state.viewer);
   }
+}
+
+function showWinner(winnerId) {
+  const view = state.view;
+  if (!view) return;
+
+  const winnerPlayer = view.players.find((p) => p.id === winnerId);
+  const isLandlordWin = winnerPlayer?.role === 'Landlord';
+
+  elements.winnerIcon.className = `overlay-icon ${isLandlordWin ? 'landlord-win' : 'farmer-win'}`;
+  elements.winnerIcon.textContent = isLandlordWin ? '地' : '农';
+  elements.winnerTitle.textContent = `玩家 ${winnerId} 获胜`;
+  elements.winnerDetail.textContent = isLandlordWin ? '地主胜利' : '农民胜利';
+  elements.winnerOverlay.hidden = false;
+}
+
+function hideWinner() {
+  elements.winnerOverlay.hidden = true;
 }
 
 function showError(error) {
