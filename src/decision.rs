@@ -848,7 +848,7 @@ fn precompute_mc_samples(
         return Vec::new();
     }
     let total_cards = view.hand.len() + outside.len();
-    if total_cards > 15 {
+    if total_cards > 20 {
         return Vec::new();
     }
     const NUM_SAMPLES: usize = 30;
