@@ -5,26 +5,22 @@ continue after context is cleared.
 
 ## Current Champion
 
-Use `strategies/strategic_v3.json` as the current best strategic policy.
-The v3 config with v4 algorithmic improvements (shape priority bonus,
-greedy tiebreaker fix).
+Use `strategies/roles_v1.json` as the current best role-specific strategy.
+
+The v1 role config with v5 algorithmic improvements plus role-specific tuning:
+- Landlord: `stranded_risk_weight: 0` (don't penalize stranded singles)
+- Sender/Blocker: same as v5 (stranded_risk_weight: 1)
+- Architecture: `RoleStrategyConfig` with separate landlord/sender/blocker configs
 
 ```json
 {
-  "avoid_power_hands": true,
-  "endgame_search_limit": 10,
-  "power_cost_normal": 4,
-  "power_cost_threat": 1,
-  "lead_longer_tiebreak": true,
-  "lead_tempo_plan_weight": 1,
-  "stranded_risk_weight": 1,
-  "opponent_urgency_weight": 1,
-  "hand_control_weight": 2,
-  "farmer_cooperation_weight": 3
+  "landlord": { "stranded_risk_weight": 0, ... },
+  "sender":   { "stranded_risk_weight": 1, ... },
+  "blocker":  { "stranded_risk_weight": 1, ... }
 }
 ```
 
-`strategies/strategic_v2.json` is retained for historical comparison.
+`strategies/strategic_v3.json` is retained for historical comparison (uniform config).
 
 Relevant commits:
 
@@ -54,7 +50,7 @@ cargo run --release --quiet --bin arena -- \
   --random-tournament \
   --games 1000 \
   --threads 12 \
-  --strategy-file strategies/strategic_v3.json \
+  --strategy-file strategies/roles_v1.json \
   --format json
 ```
 
@@ -67,7 +63,7 @@ cargo run --release --quiet --bin arena -- \
   --threads 12 \
   --early-stop 100 \
   --early-stop-regression 0.15 \
-  --strategy-file strategies/strategic_v3.json \
+  --strategy-file strategies/roles_v1.json \
   --format json
 ```
 
@@ -79,11 +75,12 @@ cargo run --release --quiet --bin arena -- \
   --games 1000 \
   --threads 12 \
   --random-source <RANDOM_SOURCE> \
-  --strategy-file strategies/strategic_v3.json \
+  --strategy-file strategies/roles_v1.json \
   --format json
 ```
 
-Quickly test parameter overrides without editing a strategy file:
+Quickly test parameter overrides without editing a strategy file
+(overrides apply to all roles):
 
 ```sh
 cargo run --release --quiet --bin arena -- \
@@ -91,7 +88,7 @@ cargo run --release --quiet --bin arena -- \
   --games 1000 \
   --threads 12 \
   --random-source <RANDOM_SOURCE> \
-  --strategy-file strategies/strategic_v3.json \
+  --strategy-file strategies/roles_v1.json \
   --endgame-search-limit 8 \
   --power-cost-normal 2 \
   --power-cost-threat 0 \
@@ -166,6 +163,34 @@ random_source=1778610168311022000: landlord=0.75, farmers=0.86
 random_source=1778610196406412000: landlord=0.78, farmers=0.85
 ```
 
+v4 to v5 comparison (MC endgame + farmer position differentiation):
+
+```text
+random_source=1778580340896195000 (batch 1)
+v4: landlord_strategic=0.76, farmers_strategic=0.86
+v5: landlord_strategic=0.76, farmers_strategic=0.90
+
+random_source=1778580344473397000 (batch 2)
+v4: landlord_strategic=0.76, farmers_strategic=0.85
+v5: landlord_strategic=0.77, farmers_strategic=0.88
+
+random_source=1778580349487460000 (batch 3)
+v4: landlord_strategic=0.75, farmers_strategic=0.85
+v5: landlord_strategic=0.75, farmers_strategic=0.88
+
+v4 averages: landlord=0.757, farmers=0.853
+v5 averages: landlord=0.760, farmers=0.887
+Delta: landlord +0.3pp, farmers +3.4pp
+```
+
+v5 verified on 3 additional random batches:
+
+```text
+random_source=1778633467521542000: landlord=0.77, farmers=0.87
+random_source=1778633500000000000: landlord=0.76, farmers=0.88
+random_source=1778633530000000000: landlord=0.75, farmers=0.88
+```
+
 Historical v2 to v3 comparison:
 
 ```text
@@ -228,30 +253,107 @@ These were tested and should not be reintroduced without a new reason:
 - 3x card-length preference: same as 2x within noise, 2x is the sweet spot.
 - 2x shape priority bonus: slightly worse than 1x for landlord (-1pp).
 
-## Current Next Step
+v4→v5 iteration attempts (all failed to meet 2pp promotion threshold):
 
-v4 promoted with three algorithmic improvements over v3:
-- Shape priority bonus for lead plays: prefer harder-to-beat hand kinds
-  (airplanes > straights > triples > pairs > singles) when leading. Subtract
-  `shape_priority(hand.kind)` from lead tempo_score.
-- Double card-length preference: 2x weight for `hand.len() - cards.len()` in
-  lead tempo, making the AI strongly prefer longer combos when leading.
-- Greedy tiebreaker fix: `remaining_groups` instead of `usize::MAX - remaining_groups`
-  in `plan_candidate_value`. Correctly prefers plays that leave remaining hand
-  well-grouped.
+- `combo_break_cost` penalizing response plays that break triples/quads: no
+  measurable effect. Existing `stranded_single_risk` and `plan_turns` already
+  handle combo preservation through the greedy tiebreaker fix.
+- Unbeatable lead bonus (`lead_unbeatable_bonus`): massive regression when
+  added inside `lead_tempo_plan_weight` multiplication due to operator
+  precedence bug (`a * b.saturating_sub(c)` = `a * (b-c)`). Fixed version
+  with small values (3-5) still regressed: AI fixated on unbeatable plays,
+  ignoring overall plan quality. Binary unbeatable check is too coarse.
+- Response strength tiebreaker (moving `hand.strength` earlier in scoring
+  tuple): within ±1pp noise. Exact tempo_score ties are rare enough that
+  this doesn't matter.
+- Straight potential in `remaining_control_quality` (bonus for consecutive
+  ranks ≥5): slight regression (-1pp landlord). AI over-valued straight-forming
+  remaining hands, avoiding plays that break useful sequences.
+- 3-card opponent threat (threat=1 or 2): no measurable effect. 3-card
+  opponents with relevant pass constraints are too rare for this to matter.
+- Beam search greedy (width 3, first step only): no measurable effect, ~1.5x
+  slower. The greedy's biggest-combo-first heuristic is already near-optimal
+  for plan estimation.
+- Proportional lead response risk (`lead_beatable_count`): massive regression
+  (-23pp landlord). Even divided by 5, adding beatable count inside the
+  `lead_tempo_plan_weight` parenthesis overwhelmed other scoring terms.
+  Penalizing beatable leads makes the AI avoid ALL small cards.
+- Reduced cards.len() weight in greedy (`cards.len() / 2`): farmer regressed
+  -1pp on one batch. The greedy's bias toward biggest combo is correct.
+- Reduced hand_control for farmers (×2/3): no additional effect beyond the
+  opponent-ratio adjustment.
 
-v4 improved landlord by 4.4pp and farmers by 2.0pp on average, with zero
-regressions across 6 independent 1000-game batches.
+Marginal improvements retained (below 2pp promotion threshold):
 
-Suggested directions for future sessions:
+- Opponent-ratio adjusted `stranded_single_risk`: scales stranded risk by
+  `opponent_cards / total_other_cards`. For farmers, this reduces risk by
+  ~33% (ally's cards aren't threats). +0.7pp farmers, 0pp landlord across
+  6 batches. Below promotion threshold but no regression.
+- MC endgame simulation alone (without farmer position): 30 samples,
+  threshold ≤15 total cards. +1pp farmers, +0.3pp landlord across 6 batches.
+  Within noise but no regression. Retained as foundation for future improvements.
+
+Uniform farmer position penalty (constant 5 or 12 points regardless of hand
+strength): no measurable effect. All candidates receive the same offset,
+so relative ordering is unchanged. Only the strength-based version
+(proportional to `hand.strength`) produced meaningful differentiation.
+
+v5→roles_v1 iteration attempts:
+
+- Role-specific `farmer_cooperation_weight` (sender=5, blocker=1): +1pp farmers
+  on one batch, within noise. The algorithmic position differentiation in
+  `farmer_cooperation_penalty` already captures this at the code level.
+- Blocker lower power cost (pcn=2, pct=0): no measurable effect.
+- Sender higher hand_control (4) + higher stranded_risk (2): no measurable effect.
+- Landlord `lead_tempo_plan_weight=2`: within ±1pp noise.
+- Landlord `opponent_urgency_weight=2`: within ±1pp noise.
+- Landlord `hand_control_weight=1`: within ±1pp noise.
+- `opponent_weakness_bonus` (exploit pass constraints when leading): massive
+  regression (-4pp landlord). The bonus overrode plan quality, making the AI
+  lead suboptimal hands just because opponents had pass constraints for that type.
+  Pass constraints aren't reliable enough for active exploitation.
+- Sender `stranded_risk_weight=0`, blocker `stranded_risk_weight=2`: mixed results,
+  one batch regressed farmers -2pp. Blocker needs some stranded risk awareness.
+- All roles `stranded_risk_weight=0`: landlord +6pp, farmers neutral. Identical
+  to landlord-only change for both placements.
+
+roles_v1 algorithmic iteration attempts (all within ±2pp noise):
+
+- `response_overkill`: penalize response plays that use much more strength
+  than needed (strength delta / 3). ~+1pp average, within noise. Retained as
+  harmless nudge toward efficient responses.
+- `ally_finish_assist`: when leading and ally has 1-2 cards, bonus for leading
+  Single (ally=1) or Pair (ally=2) with strength ≤ 10. ~+0.7pp farmers, within
+  noise. Retained as harmless cooperation nudge.
+- Near-finish aggression (reduce control/stranded/threat when plan_turns ≤ 2):
+  zero additional effect beyond response_overkill. Reverted.
+- Inferred unbeatable bonus (use pass constraints to detect plays no opponent
+  can beat): no improvement, slight farmer regression (-1pp on one batch).
+  Reverted.
+- MC simulation ally cooperation (simulated farmers pass on ally's plays):
+  no improvement, slight farmer regression (-1pp on one batch). Reverted.
+- Ally-aware `remaining_control_quality` (only count opponent-reachable cards
+  as threats): changed too many decisions (5 test failures), too risky. Reverted.
+
+## Current State
+
+roles_v1 with minor algorithmic improvements (response_overkill, ally_finish_assist):
+
+```text
+random_source=1778649390821997000: landlord=0.83, farmers=0.89
+random_source=1778649419376375000: landlord=0.84, farmers=0.89
+random_source=1778649447480388000: landlord=0.83, farmers=0.88
+```
+
+Consistent with roles_v1 baseline: L=0.82-0.84, F=0.88-0.90. The rule-based
+strategic policy has reached a local optimum — parameter tuning and incremental
+algorithmic changes all land within ±1-2pp noise.
+
+Further improvement requires fundamentally different approaches:
 - 2-ply minimax: consider opponent responses when evaluating plays
 - Probabilistic opponent hand estimation: infer opponent holdings beyond pass constraints
-- Adaptive strategy: different scoring weights based on game phase
-- Learned evaluation: replace hand-crafted scoring with ML model
-
-Infrastructure improvements available for future tuning:
-- `--hand-control-weight` and `--farmer-cooperation-weight` CLI overrides
-- `--stranded-risk-weight` and `--opponent-urgency-weight` CLI overrides
+- Better MC simulation: pass real relationships, use strategic policy in simulation
+- Learned evaluation: replace hand-crafted scoring with neural network (DouZero-style)
 
 Keep rejected candidates out of commits. Commit only promoted strategy versions
 and reusable evaluation tooling.
