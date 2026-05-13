@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
-Current Spec Kit plan: `specs/001-core-harness/plan.md`.
+Current Spec Kit plan: `specs/001-core-arena/plan.md`.
 Use it for project structure, shell commands, and verification expectations.
 <!-- SPECKIT END -->
 
@@ -9,7 +9,7 @@ Use it for project structure, shell commands, and verification expectations.
   visibility, and player decision contracts.
 - Keep Electron as an adapter over the core library.
 - Do not implement hidden-information leaks in player-facing views.
-- Add or update deterministic harness coverage for behavior changes.
+- Add or update deterministic arena coverage for behavior changes.
 - Prefer Spec Kit artifacts under `specs/` for non-trivial features.
 - Follow `docs/git-commit-conventions.md` for commit messages and commit
   boundaries.

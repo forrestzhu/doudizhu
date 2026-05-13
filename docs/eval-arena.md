@@ -1,6 +1,6 @@
-# Eval Harness
+# Eval Arena
 
-The harness follows an eval-driven pattern: define expected behavior as data,
+The arena follows an eval-driven pattern: define expected behavior as data,
 run it deterministically, and make the output machine-readable.
 
 ## Why This Exists
@@ -14,25 +14,25 @@ that is independent of Electron and independent of subjective review.
 Run seeded self-play:
 
 ```sh
-cargo run --bin harness -- --games 10 --seed 42
+cargo run --bin arena -- --games 10 --seed 42
 ```
 
 Run seeded self-play with JSON:
 
 ```sh
-cargo run --bin harness -- --games 10 --seed 42 --format json
+cargo run --bin arena -- --games 10 --seed 42 --format json
 ```
 
 Run one scenario:
 
 ```sh
-cargo run --bin harness -- --scenario evals/scenarios/bomb_beats_pair.json
+cargo run --bin arena -- --scenario evals/scenarios/bomb_beats_pair.json
 ```
 
 Run one scenario with JSON:
 
 ```sh
-cargo run --bin harness -- --scenario evals/scenarios/bomb_beats_pair.json --format json
+cargo run --bin arena -- --scenario evals/scenarios/bomb_beats_pair.json --format json
 ```
 
 Run all local quality gates:
@@ -80,7 +80,7 @@ Runs deterministic seeded games and checks aggregate outcomes.
 Reports include:
 
 - `schema_version`: output contract version
-- `deterministic`: always `true` for current harness reports
+- `deterministic`: always `true` for current arena reports
 - `pass`: aggregate pass/fail
 - `checks`: individual assertions
 - `metrics`: numeric summary values

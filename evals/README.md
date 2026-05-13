@@ -7,13 +7,13 @@ decision-contract changes.
 ## Run A Scenario
 
 ```sh
-cargo run --bin harness -- --scenario evals/scenarios/bomb_beats_pair.json
+cargo run --bin arena -- --scenario evals/scenarios/bomb_beats_pair.json
 ```
 
 ## JSON Output
 
 ```sh
-cargo run --bin harness -- --scenario evals/scenarios/bomb_beats_pair.json --format json
+cargo run --bin arena -- --scenario evals/scenarios/bomb_beats_pair.json --format json
 ```
 
 Every report includes:

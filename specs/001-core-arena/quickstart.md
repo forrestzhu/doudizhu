@@ -1,4 +1,4 @@
-# Quickstart: Core Harness
+# Quickstart: Core Arena
 
 ## Run Tests
 
@@ -9,20 +9,20 @@ cargo test
 ## Run One Seeded Game
 
 ```sh
-cargo run --bin harness -- --seed 42
+cargo run --bin arena -- --seed 42
 ```
 
 ## Run Multiple Simulations
 
 ```sh
-cargo run --bin harness -- --games 10 --seed 42
+cargo run --bin arena -- --games 10 --seed 42
 ```
 
 ## Run Eval Scenarios
 
 ```sh
-cargo run --bin harness -- --scenario evals/scenarios/bomb_beats_pair.json
-cargo run --bin harness -- --scenario evals/scenarios/visibility_no_leak.json --format json
+cargo run --bin arena -- --scenario evals/scenarios/bomb_beats_pair.json
+cargo run --bin arena -- --scenario evals/scenarios/visibility_no_leak.json --format json
 ```
 
 ## Run All Local Checks
@@ -48,15 +48,15 @@ automatic play driven by the Rust trace report.
 npm run test:e2e
 ```
 
-The E2E tests launch Electron with Playwright and exercise the real Rust harness
+The E2E tests launch Electron with Playwright and exercise the real Rust arena
 session/trace flow.
 
 ## Inspect Session And Trace JSON
 
 ```sh
-cargo run --bin harness -- --session --seed 42 --viewer 0 --format json
-cargo run --bin harness -- --trace --seed 42 --format json
-cargo run --bin harness -- --trace --seed 42 --allow-power --format json
+cargo run --bin arena -- --session --seed 42 --viewer 0 --format json
+cargo run --bin arena -- --trace --seed 42 --format json
+cargo run --bin arena -- --trace --seed 42 --allow-power --format json
 ```
 
 `--session` is player-facing and only includes the selected viewer's hand.

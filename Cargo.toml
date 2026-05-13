@@ -12,5 +12,5 @@ name = "doudizhu"
 path = "src/lib.rs"
 
 [[bin]]
-name = "harness"
-path = "src/bin/harness.rs"
+name = "arena"
+path = "src/bin/arena.rs"

@@ -474,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_can_run_a_seeded_self_play_game() {
+    fn arena_can_run_a_seeded_self_play_game() {
         let deal = Deal::from_seed(42, 3);
         let mut game = Game::new(deal, GameConfig::default()).unwrap();
         let mut policies: Vec<Box<dyn DecisionPolicy>> = vec![

@@ -1,4 +1,4 @@
-# Data Model: Core Harness And Pluggable Decisions
+# Data Model: Core Arena And Pluggable Decisions
 
 ## Card
 

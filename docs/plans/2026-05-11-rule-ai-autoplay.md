@@ -9,7 +9,7 @@ visibility, policy decisions, and full game logs. Electron main owns game
 sessions and complete records; renderer receives only the selected viewer's
 projection plus public history and hint cards for that viewer.
 
-**Tech Stack:** Rust core and harness, Electron main/preload, vanilla renderer,
+**Tech Stack:** Rust core and arena, Electron main/preload, vanilla renderer,
 Playwright E2E.
 
 ## Task 1: Rust Step API And Configurable Policy
@@ -26,11 +26,11 @@ Playwright E2E.
 - Add unit tests for turn ownership, finished games, invalid players, policy
   configuration, and avoiding bombs when a normal response exists.
 
-## Task 2: Harness Session, Hint, Step, And Logs
+## Task 2: Arena Session, Hint, Step, And Logs
 
 **Files:**
-- Modify: `src/harness.rs`
-- Modify: `src/bin/harness.rs`
+- Modify: `src/arena.rs`
+- Modify: `src/bin/arena.rs`
 
 **Requirements:**
 - Add trusted `EpisodeReport` with seed, complete initial hands, bottom cards,
@@ -55,7 +55,7 @@ Playwright E2E.
 - Modify: `renderer/styles.css`
 
 **Requirements:**
-- Main process owns `gameId -> session` and calls Rust harness/session APIs.
+- Main process owns `gameId -> session` and calls Rust arena/session APIs.
 - Preload exposes `startGame`, `setViewer`, `getHint`, `autoStep`.
 - Renderer supports:
   - Start/redeal game.
@@ -71,10 +71,10 @@ Playwright E2E.
 **Files:**
 - Modify: `tests/e2e/electron-deal.spec.js`
 - Modify: `scripts/verify.sh`
-- Modify: `specs/001-core-harness/quickstart.md`
+- Modify: `specs/001-core-arena/quickstart.md`
 
 **Requirements:**
 - Add Playwright E2E for start game, hint, single step, autoplay, history, winner
   or history growth, and hidden-information non-leakage.
 - Ensure `./scripts/verify.sh` runs Rust tests, clippy, UI syntax, Electron E2E,
-  trace smoke command, and existing harness scenarios.
+  trace smoke command, and existing arena scenarios.

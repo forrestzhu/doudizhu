@@ -1,20 +1,20 @@
-# Implementation Plan: Core Harness And Pluggable Decisions
+# Implementation Plan: Core Arena And Pluggable Decisions
 
-**Branch**: `001-core-harness` | **Date**: 2026-05-11 | **Spec**: `specs/001-core-harness/spec.md`
+**Branch**: `001-core-arena` | **Date**: 2026-05-11 | **Spec**: `specs/001-core-arena/spec.md`
 
 ## Summary
 
 Create a UI-independent Rust core that can model a reduced Dou Dizhu game,
 project player-specific visibility, accept pluggable decision policies, and run
-deterministic self-play through a CLI harness.
+deterministic self-play through a CLI arena.
 
 ## Technical Context
 
 **Language/Version**: Rust 1.93  
 **Primary Dependencies**: Rust standard library for core logic; `serde` and
-`serde_json` for scenario fixtures and machine-readable harness reports  
+`serde_json` for scenario fixtures and machine-readable arena reports  
 **Storage**: In-memory state  
-**Testing**: `cargo test`; seeded CLI harness runs  
+**Testing**: `cargo test`; seeded CLI arena runs  
 **Target Type**: Library plus CLI binary; future Electron adapter  
 **Constraints**: No UI dependency in core, deterministic seeds, no opponent-hand
 leaks in default visibility  
@@ -25,7 +25,7 @@ leaks in default visibility
 - Core-first game logic: satisfied by `src/lib.rs` and modules under `src/`.
 - Pluggable decisions: satisfied by `DecisionPolicy`.
 - Visibility contract: satisfied by `PlayerView` projection tests.
-- Executable harness before UI: satisfied by `src/bin/harness.rs`.
+- Executable arena before UI: satisfied by `src/bin/arena.rs`.
 - Spec-anchored development: this plan and `spec.md` describe the current slice.
 
 ## Project Structure
@@ -37,13 +37,13 @@ src/
   visibility.rs   # player view contract
   decision.rs     # decision trait and baseline bot
   engine.rs       # deal, turn engine, history, validation
-  bin/harness.rs  # seeded self-play CLI
+  bin/arena.rs  # seeded self-play CLI
 docs/
   architecture.md
-  eval-harness.md
+  eval-arena.md
 evals/
   scenarios/      # deterministic eval fixtures
-specs/001-core-harness/
+specs/001-core-arena/
   spec.md
   plan.md
   data-model.md
@@ -64,7 +64,7 @@ specs/001-core-harness/
 - `RuleSet` validates hand semantics and comparison.
 - `DecisionPolicy` sees only `PlayerView` and returns `Decision`.
 - `Game` owns hidden state and validates every decision before mutation.
-- CLI harness runs N seeded games and exits non-zero on engine error.
+- CLI arena runs N seeded games and exits non-zero on engine error.
 - Eval scenarios run through the same CLI and produce stable JSON reports.
 
 ## Verification
@@ -72,8 +72,8 @@ specs/001-core-harness/
 ```sh
 cargo fmt --check
 cargo test
-cargo run --bin harness -- --games 10 --seed 42
-cargo run --bin harness -- --scenario evals/scenarios/bomb_beats_pair.json --format json
+cargo run --bin arena -- --games 10 --seed 42
+cargo run --bin arena -- --scenario evals/scenarios/bomb_beats_pair.json --format json
 ```
 
 ## Next Slices

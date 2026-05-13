@@ -29,9 +29,9 @@ hand counts, relationships, and the current required response. It MUST NOT expos
 hidden opponent cards or future deck information unless the selected game mode
 explicitly declares that information public.
 
-### IV. Executable Harness Before UI
+### IV. Executable Arena Before UI
 Every lasting behavior change MUST be testable without Tauri. The project MUST
-maintain a deterministic CLI/self-play harness that can deal cards, run decisions,
+maintain a deterministic CLI/self-play arena that can deal cards, run decisions,
 validate rule enforcement, and report outcomes for repeated simulations.
 
 ### V. Spec-Anchored Development
@@ -45,7 +45,7 @@ verification commands. Code, tests, and docs MUST stay aligned with the active s
 - Tauri is an adapter over the core library, not the owner of game rules.
 - Rule engines must support incremental expansion from reduced rule sets to full
   Dou Dizhu rules.
-- Harness scenarios must support deterministic seeds and hand-authored decks so
+- Arena scenarios must support deterministic seeds and hand-authored decks so
   regressions are reproducible.
 
 ## Spec Kit Workflow

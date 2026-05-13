@@ -36,7 +36,7 @@ Use a short area name when it adds clarity:
 - `rules`: hand classification and comparison logic
 - `visibility`: player view and hidden-information boundaries
 - `decision`: player policy contracts or bots
-- `harness`: CLI simulations and regression scenarios
+- `arena`: CLI simulations and regression scenarios
 - `electron`: desktop UI adapter
 - `spec`: Spec Kit artifacts under `specs/`
 - `docs`: architecture/design documents
@@ -52,7 +52,7 @@ docs: add git commit conventions
 Write the summary in imperative mood, lower-case after the type:
 
 ```text
-feat(harness): add seeded self-play runner
+feat(arena): add seeded self-play runner
 fix(rules): reject unmatched pair responses
 docs(spec): describe player visibility contract
 ```
@@ -102,7 +102,7 @@ Closes #12
 
 - Keep one commit focused on one logical change.
 - Do not mix generated build output with source changes.
-- Include tests or harness updates in the same commit as behavior changes when
+- Include tests or arena updates in the same commit as behavior changes when
   they prove that behavior.
 - Do not include local IDE state or personal machine configuration.
 
@@ -111,7 +111,7 @@ Closes #12
 Choose the narrowest command set that proves the change:
 
 - Rust behavior change: `cargo fmt --check && cargo test && cargo clippy -- -D warnings`
-- Harness behavior change: add `cargo run --bin harness -- --games 10 --seed 42`
+- Arena behavior change: add `cargo run --bin arena -- --games 10 --seed 42`
 - Docs-only change: review rendered Markdown or run a lightweight text check
 
 Record important verification in the PR or final handoff, not necessarily in the

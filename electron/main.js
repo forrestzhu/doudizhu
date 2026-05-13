@@ -58,21 +58,21 @@ async function startGame(request = {}) {
   };
   sessions.set(gameId, session);
 
-  return gameViewFromHarness(session, viewer);
+  return gameViewFromArena(session, viewer);
 }
 
 async function setViewer(request = {}) {
   const gameId = String(request.gameId || '');
   const session = requireSession(gameId);
   const viewer = normalizedViewer(request.viewer);
-  return gameViewFromHarness(session, viewer);
+  return gameViewFromArena(session, viewer);
 }
 
 async function getHint(request = {}) {
   const gameId = String(request.gameId || '');
   const session = requireSession(gameId);
   const viewer = normalizedViewer(request.viewer);
-  const view = await gameViewFromHarness(session, viewer);
+  const view = await gameViewFromArena(session, viewer);
   if (view.current_player !== viewer || view.winner !== null) {
     return {
       recommended: [],
@@ -88,21 +88,21 @@ async function autoStep(request = {}) {
   const gameId = String(request.gameId || '');
   const session = requireSession(gameId);
   const viewer = normalizedViewer(request.viewer);
-  const current = await gameViewFromHarness(session, viewer);
+  const current = await gameViewFromArena(session, viewer);
   if (current.winner === null || current.winner === undefined) {
     session.cursor += 1;
   }
 
-  return gameViewFromHarness(session, viewer);
+  return gameViewFromArena(session, viewer);
 }
 
-async function gameViewFromHarness(session, viewer) {
+async function gameViewFromArena(session, viewer) {
   const report = await sessionReport(session.seed, viewer, session.cursor);
   return normalizeGameView(report.view, session.gameId);
 }
 
 function sessionReport(seed, viewer, steps) {
-  return runHarness([
+  return runArena([
     '--session',
     '--seed',
     String(seed),
@@ -195,11 +195,11 @@ function integerOrDefault(value, fallback) {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function runHarness(args) {
+function runArena(args) {
   return new Promise((resolve, reject) => {
     execFile(
       'cargo',
-      ['run', '--quiet', '--bin', 'harness', '--', ...args],
+      ['run', '--quiet', '--bin', 'arena', '--', ...args],
       {
         cwd: projectRoot,
         timeout: 30_000,
@@ -214,7 +214,7 @@ function runHarness(args) {
         try {
           resolve(JSON.parse(stdout));
         } catch (parseError) {
-          reject(new Error(`invalid harness JSON: ${parseError.message}`));
+          reject(new Error(`invalid arena JSON: ${parseError.message}`));
         }
       },
     );

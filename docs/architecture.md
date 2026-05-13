@@ -3,7 +3,7 @@
 ## Goal
 
 Build the game as a testable core engine first, then attach Electron as the
-desktop player interface. The core must support deterministic harness runs and
+desktop player interface. The core must support deterministic arena runs and
 pluggable decision systems before the UI exists.
 
 ## Layers
@@ -13,13 +13,13 @@ pluggable decision systems before the UI exists.
    - rule classification and comparison
    - visibility projection per player
    - decision input/output contract
-   - deterministic self-play harness
+   - deterministic self-play arena
 
 2. `adapters`
    - Electron main/preload code translates UI events into core actions.
    - Renderer views must request player-specific projections instead of full
      hidden game state.
-   - CLI harness runs seeded simulations and regression scenarios.
+   - CLI arena runs seeded simulations and regression scenarios.
    - Future LLM/search adapters implement the same decision trait.
 
 3. `specs`
@@ -57,7 +57,7 @@ Invalid decisions are engine errors, not implicit corrections.
 ### Rule System
 
 `RuleSet` owns hand classification and comparison. The initial `BasicRules`
-supports only single, pair, triple, bomb, and rocket so the harness can run now.
+supports only single, pair, triple, bomb, and rocket so the arena can run now.
 Full Dou Dizhu rule expansion should add straights, consecutive pairs, three-with,
 airplanes, and rule variants behind the same trait.
 
@@ -65,9 +65,9 @@ The initial deal model treats player 0 as landlord and immediately adds the
 three bottom cards to player 0's hand. The bottom cards are still retained on the
 `Deal` for future UI reveal/history behavior.
 
-## Harness Strategy
+## Arena Strategy
 
-The harness must answer these questions after every development slice:
+The arena must answer these questions after every development slice:
 
 - Can the engine execute a deterministic game without hidden UI state?
 - Can tests assert specific rule, visibility, and decision-contract behavior?
@@ -77,8 +77,8 @@ Current commands:
 
 ```sh
 cargo test
-cargo run --bin harness -- --games 10 --seed 42
-cargo run --bin harness -- --scenario evals/scenarios/bomb_beats_pair.json --format json
+cargo run --bin arena -- --games 10 --seed 42
+cargo run --bin arena -- --scenario evals/scenarios/bomb_beats_pair.json --format json
 ```
 
 ## Open Design Questions
