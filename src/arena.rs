@@ -1,7 +1,7 @@
 use crate::cards::Card;
 use crate::decision::{
-    legal_candidates, DecisionPolicy, RuleBasedPolicy, RuleBasedPolicyConfig, StrategicPolicy,
-    StrategicPolicyConfig,
+    legal_candidates, DecisionPolicy, RoleStrategyConfig, RuleBasedPolicy, RuleBasedPolicyConfig,
+    StrategicPolicy,
 };
 use crate::engine::{Deal, Game, GameConfig, GameError, GameStatus, PlayerId, TurnRecord};
 use crate::rules::{BasicRules, ClassifiedHand, RuleSet};
@@ -151,7 +151,7 @@ pub struct RandomTournamentReport {
     pub random_source: u64,
     pub games: usize,
     pub deal_seeds: Vec<u64>,
-    pub strategy: StrategicPolicyConfig,
+    pub strategy: RoleStrategyConfig,
     pub runs: Vec<TournamentRunReport>,
     pub conclusion: TournamentConclusion,
     pub early_stopped: bool,
@@ -427,7 +427,7 @@ pub fn run_seeded_games_with_landlord_policy(
 pub fn run_random_tournament(
     games: usize,
     max_turns: usize,
-    strategy: StrategicPolicyConfig,
+    strategy: RoleStrategyConfig,
     significance_threshold: f64,
 ) -> Result<RandomTournamentReport, ArenaError> {
     run_random_tournament_from_source(
@@ -443,7 +443,7 @@ pub fn run_random_tournament_from_source(
     random_source: u64,
     games: usize,
     max_turns: usize,
-    strategy: StrategicPolicyConfig,
+    strategy: RoleStrategyConfig,
     significance_threshold: f64,
 ) -> Result<RandomTournamentReport, ArenaError> {
     if games == 0 {
@@ -499,7 +499,7 @@ fn run_policy_placement_games(
     deal_seeds: &[u64],
     max_turns: usize,
     placement: PolicyPlacement,
-    strategy: StrategicPolicyConfig,
+    strategy: RoleStrategyConfig,
 ) -> Result<TournamentRunReport, ArenaError> {
     let mut wins = vec![0usize; 3];
     let mut reports = Vec::with_capacity(deal_seeds.len());
@@ -560,7 +560,7 @@ fn run_policy_placement_games_parallel(
     deal_seeds: &[u64],
     max_turns: usize,
     placement: PolicyPlacement,
-    strategy: StrategicPolicyConfig,
+    strategy: RoleStrategyConfig,
     num_threads: usize,
 ) -> Result<TournamentRunReport, ArenaError> {
     if deal_seeds.is_empty() {
@@ -690,7 +690,7 @@ pub fn run_random_tournament_from_source_opt(
     random_source: u64,
     games: usize,
     max_turns: usize,
-    strategy: StrategicPolicyConfig,
+    strategy: RoleStrategyConfig,
     significance_threshold: f64,
     options: TournamentOptions,
 ) -> Result<RandomTournamentReport, ArenaError> {
@@ -1162,19 +1162,19 @@ fn self_play_policies(
 fn placement_policies(
     placement: PolicyPlacement,
     rule_config: RuleBasedPolicyConfig,
-    strategy_config: StrategicPolicyConfig,
+    strategy_config: RoleStrategyConfig,
 ) -> Vec<Box<dyn DecisionPolicy>> {
     match placement {
         PolicyPlacement::AllRuleBased => rule_based_policies(3, rule_config),
         PolicyPlacement::LandlordStrategic => vec![
-            Box::new(StrategicPolicy::from_config(strategy_config)),
+            Box::new(StrategicPolicy::from_role_configs(strategy_config)),
             Box::new(RuleBasedPolicy::new(rule_config)),
             Box::new(RuleBasedPolicy::new(rule_config)),
         ],
         PolicyPlacement::FarmersStrategic => vec![
             Box::new(RuleBasedPolicy::new(rule_config)),
-            Box::new(StrategicPolicy::from_config(strategy_config)),
-            Box::new(StrategicPolicy::from_config(strategy_config)),
+            Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+            Box::new(StrategicPolicy::from_role_configs(strategy_config)),
         ],
     }
 }
@@ -1356,7 +1356,7 @@ mod tests {
         run_session_after_steps, run_trace, run_trace_with_config, ArenaError, LandlordPolicy,
     };
     use crate::cards::{Card, Rank, Suit};
-    use crate::decision::{RuleBasedPolicyConfig, StrategicPolicyConfig};
+    use crate::decision::{RoleStrategyConfig, RuleBasedPolicyConfig, StrategicPolicyConfig};
     use crate::engine::Deal;
     use crate::rules::{BasicRules, RuleSet};
     use std::str::FromStr;
@@ -1444,7 +1444,7 @@ mod tests {
     #[test]
     fn random_tournament_compares_all_policy_placements() {
         let report =
-            super::run_random_tournament(2, 1_000, StrategicPolicyConfig::default(), 0.10).unwrap();
+            super::run_random_tournament(2, 1_000, RoleStrategyConfig::default(), 0.10).unwrap();
 
         assert!(!report.deterministic);
         assert_eq!(report.deal_seeds.len(), 2);

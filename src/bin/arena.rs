@@ -5,7 +5,7 @@ use doudizhu::arena::{
     run_seeded_games_with_landlord_policy, run_trace_with_landlord_policy, LandlordPolicy,
     TournamentOptions,
 };
-use doudizhu::{RuleBasedPolicyConfig, StrategicPolicyConfig};
+use doudizhu::{RoleStrategyConfig, RuleBasedPolicyConfig, StrategicPolicyConfig};
 use std::path::Path;
 
 fn main() {
@@ -294,14 +294,39 @@ fn has_flag(args: &[String], flag: &str) -> bool {
     args.iter().any(|arg| arg == flag)
 }
 
-fn read_strategy_config(path: &str) -> Result<StrategicPolicyConfig, String> {
+fn read_strategy_config(path: &str) -> Result<RoleStrategyConfig, String> {
     let contents = std::fs::read_to_string(path)
         .map_err(|error| format!("failed to read strategy file {path}: {error}"))?;
-    serde_json::from_str(&contents)
-        .map_err(|error| format!("failed to parse strategy file {path}: {error}"))
+    let value: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|error| format!("failed to parse strategy file {path}: {error}"))?;
+    if value.get("landlord").is_some()
+        || value.get("sender").is_some()
+        || value.get("blocker").is_some()
+    {
+        serde_json::from_value(value)
+            .map_err(|error| format!("failed to parse role strategy file {path}: {error}"))
+    } else {
+        let single: StrategicPolicyConfig = serde_json::from_value(value)
+            .map_err(|error| format!("failed to parse strategy file {path}: {error}"))?;
+        Ok(RoleStrategyConfig {
+            landlord: single,
+            sender: single,
+            blocker: single,
+        })
+    }
 }
 
-fn apply_strategy_overrides(args: &[String], config: &mut StrategicPolicyConfig) {
+fn apply_strategy_overrides(args: &[String], config: &mut RoleStrategyConfig) {
+    for role_config in [
+        &mut config.landlord,
+        &mut config.sender,
+        &mut config.blocker,
+    ] {
+        apply_single_strategy_overrides(args, role_config);
+    }
+}
+
+fn apply_single_strategy_overrides(args: &[String], config: &mut StrategicPolicyConfig) {
     if let Some(value) = read_usize_arg(args, "--endgame-search-limit") {
         config.endgame_search_limit = value;
     }
