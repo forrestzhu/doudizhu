@@ -13,7 +13,10 @@
     "decomposition_weight": 1,
     "pass_value_weight": 0,
     "sequence_lookahead": true,
-    "bomb_control_bonus": 5
+    "bomb_control_bonus": 5,
+    "trump_conservation_weight": 1,
+    "opening_resilience_weight": 2,
+    "endgame_pair_preserve": 1
   },
   "sender": {
     "avoid_power_hands": true,
@@ -29,7 +32,10 @@
     "decomposition_weight": 1,
     "pass_value_weight": 2,
     "sequence_lookahead": true,
-    "bomb_control_bonus": 5
+    "bomb_control_bonus": 5,
+    "trump_conservation_weight": 2,
+    "opening_resilience_weight": 1,
+    "endgame_pair_preserve": 1
   },
   "blocker": {
     "avoid_power_hands": true,
@@ -45,6 +51,9 @@
     "decomposition_weight": 1,
     "pass_value_weight": 2,
     "sequence_lookahead": true,
-    "bomb_control_bonus": 5
+    "bomb_control_bonus": 5,
+    "trump_conservation_weight": 2,
+    "opening_resilience_weight": 1,
+    "endgame_pair_preserve": 1
   }
 }

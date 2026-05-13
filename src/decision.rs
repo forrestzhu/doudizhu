@@ -140,6 +140,12 @@ pub struct StrategicPolicyConfig {
     pub sequence_lookahead: bool,
     #[serde(default = "default_five")]
     pub bomb_control_bonus: usize,
+    #[serde(default = "default_three")]
+    pub trump_conservation_weight: usize,
+    #[serde(default = "default_two")]
+    pub opening_resilience_weight: usize,
+    #[serde(default = "default_one")]
+    pub endgame_pair_preserve: usize,
 }
 
 impl Default for StrategicPolicyConfig {
@@ -159,6 +165,9 @@ impl Default for StrategicPolicyConfig {
             pass_value_weight: default_two(),
             sequence_lookahead: default_true(),
             bomb_control_bonus: default_five(),
+            trump_conservation_weight: default_three(),
+            opening_resilience_weight: default_two(),
+            endgame_pair_preserve: default_one(),
         }
     }
 }
@@ -913,6 +922,10 @@ fn choose_strategic_candidate(
             0
         };
         let bomb_ctrl = bomb_control_bonus(hand, view) * config.bomb_control_bonus / 5;
+        let trump_cost = trump_conservation_penalty(hand, view) * config.trump_conservation_weight;
+        let open_bonus =
+            opening_resilience_bonus(hand, &remaining, view) * config.opening_resilience_weight;
+        let pair_break = endgame_pair_break_penalty(hand, view) * config.endgame_pair_preserve;
         let unbeatable_bonus = if view.previous_play.is_none()
             && hand.cards.len() > max_opponent_cards
             && !is_power_hand(hand)
@@ -929,13 +942,15 @@ fn choose_strategic_candidate(
                 + power_cost
                 + split_penalty
                 + coop
-                + decomp)
+                + decomp
+                + pair_break)
                 * config.lead_tempo_plan_weight
                 + (view.hand.len().saturating_sub(hand.cards.len()))
                     * 2usize.saturating_sub(shape_priority(hand.kind) as usize);
             base.saturating_sub(bomb_bonus)
                 .saturating_sub(unbeatable_bonus)
                 .saturating_sub(seq_bonus)
+                .saturating_sub(open_bonus)
         } else {
             let overkill = response_overkill(hand, view.previous_play.as_ref());
             (plan_turns
@@ -947,6 +962,8 @@ fn choose_strategic_candidate(
                 + coop
                 + decomp
                 + pass_bonus
+                + trump_cost
+                + pair_break
                 + overkill)
                 .saturating_sub(bomb_bonus)
                 .saturating_sub(bomb_ctrl)
@@ -1443,6 +1460,102 @@ fn sequence_lookahead_bonus(
         }
     }
     0
+}
+
+fn trump_conservation_penalty(hand: &ClassifiedHand, view: &PlayerView) -> usize {
+    if view.previous_play.is_none() || hand.kind != HandKind::Single {
+        return 0;
+    }
+    let card = match hand.cards.first() {
+        Some(c) => c,
+        None => return 0,
+    };
+    if card.rank != Rank::Two {
+        return 0;
+    }
+    // Count how many 2s are in our hand
+    let two_count = view.hand.iter().filter(|c| c.rank == Rank::Two).count();
+    if two_count != 1 {
+        return 0;
+    }
+    // Penalize playing our last 2 when we still have many cards
+    let min_opp = (0..view.hand_counts.len())
+        .filter(|id| is_opponent(view, *id))
+        .map(|id| view.hand_counts[id])
+        .min()
+        .unwrap_or(usize::MAX);
+    // Don't penalize if opponent is about to finish
+    if min_opp <= 2 {
+        return 0;
+    }
+    if view.hand.len() > 10 {
+        8
+    } else if view.hand.len() > 6 {
+        4
+    } else {
+        0
+    }
+}
+
+fn opening_resilience_bonus(
+    _hand: &ClassifiedHand,
+    remaining: &[Card],
+    view: &PlayerView,
+) -> usize {
+    if view.previous_play.is_some() || !view.history.is_empty() {
+        return 0;
+    }
+    // Check if remaining hand has any bombs/rockets (resilience)
+    let has_bomb = remaining
+        .iter()
+        .filter(|c| !c.rank.is_joker())
+        .collect::<Vec<_>>()
+        .iter()
+        .map(|c| c.rank)
+        .collect::<std::collections::HashSet<_>>()
+        .iter()
+        .any(|rank| remaining.iter().filter(|c| c.rank == *rank).count() == 4);
+    let has_rocket = remaining.iter().any(|c| c.rank == Rank::BlackJoker)
+        && remaining.iter().any(|c| c.rank == Rank::RedJoker);
+
+    let mut bonus = 0;
+    if has_bomb || has_rocket {
+        bonus += 6;
+    }
+    // Bonus if remaining has low fragmentation (few orphan singles)
+    let remaining_groups = grouped_by_rank(remaining);
+    let orphan_singles = remaining_groups
+        .values()
+        .filter(|cards| cards.len() == 1 && !cards[0].rank.is_joker())
+        .count();
+    if orphan_singles <= 2 {
+        bonus += 3;
+    }
+    bonus
+}
+
+fn endgame_pair_break_penalty(hand: &ClassifiedHand, view: &PlayerView) -> usize {
+    if view.hand.len() > 4 || hand.kind != HandKind::Single {
+        return 0;
+    }
+    let card = match hand.cards.first() {
+        Some(c) => c,
+        None => return 0,
+    };
+    // Check if this card's rank has a pair/triple in our hand
+    let same_rank_count = view.hand.iter().filter(|c| c.rank == card.rank).count();
+    if same_rank_count >= 2 {
+        // Penalize breaking a pair/triple to play a single in endgame
+        let remaining_after = view.hand.len() - 1;
+        // Stronger penalty when very few cards left
+        if remaining_after <= 2 {
+            8
+        } else {
+            4
+        }
+    } else {
+        0
+    }
 }
 
 fn enhanced_opponent_threat_risk(
