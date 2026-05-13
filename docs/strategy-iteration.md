@@ -5,28 +5,21 @@ continue after context is cleared.
 
 ## Current Champion
 
-Use `strategies/roles_v1.json` as the current best role-specific strategy.
+Use `strategies/roles_v1.json` as the current best role-specific strategy (v8).
 
-The v1 role config with v5 algorithmic improvements plus role-specific tuning:
-- Landlord: `stranded_risk_weight: 0` (don't penalize stranded singles)
-- Sender/Blocker: same as v5 (stranded_risk_weight: 1)
+The v8 config adds MC threshold upgrade and hill-climbing-optimized landlord params:
+- Landlord: `lead_tempo_plan_weight: 2` (was 1), `opening_resilience_weight: 1` (was 2)
+- Sender/Blocker: unchanged from v7
+- MC simulation threshold: 20 cards (was 15)
 - Architecture: `RoleStrategyConfig` with separate landlord/sender/blocker configs
-
-```json
-{
-  "landlord": { "stranded_risk_weight": 0, ... },
-  "sender":   { "stranded_risk_weight": 1, ... },
-  "blocker":  { "stranded_risk_weight": 1, ... }
-}
-```
 
 `strategies/strategic_v3.json` is retained for historical comparison (uniform config).
 
 Relevant commits:
 
-- `3028676 feat(decision): add strategic policy tournament`
-- `ee45b34 chore(arena): add strategy tuning controls`
-- `f1b8034 feat(decision): add strategic policy v2`
+- `8c0ddbb feat(decision): optimize landlord strategy v8 via hill-climbing`
+- `0610414 feat(decision): raise MC simulation threshold from 15 to 20 cards`
+- `ae27079 feat(decision): add strategic policy v7 with MC simulation and role-specific configs`
 
 ## Evaluation Goal
 
@@ -337,23 +330,37 @@ roles_v1 algorithmic iteration attempts (all within ±2pp noise):
 
 ## Current State
 
-roles_v1 with minor algorithmic improvements (response_overkill, ally_finish_assist):
+roles_v1 (v8) with MC threshold upgrade and hill-climbing optimization:
 
 ```text
-random_source=1778649390821997000: landlord=0.83, farmers=0.89
-random_source=1778649419376375000: landlord=0.84, farmers=0.89
-random_source=1778649447480388000: landlord=0.83, farmers=0.88
+random_source=1778665785420242000 (200 games, same seed comparison):
+v7 (pre-MC upgrade):  all_strategic landlord=0.48, farmer=0.52
+v7+MC (threshold 20): all_strategic landlord=0.53, farmer=0.47
+v8 (hill-climb):      all_strategic landlord=0.56, farmer=0.43
+
+Cross-version A/B (v8 vs v7 baseline):
+v8 landlord_delta=+0.04, v8 farmer_delta=-0.04
+
+Landlord_strategic: 0.83 (unchanged — improvement from strategic interaction)
+Farmers_strategic:  0.89 (unchanged — only landlord config changed)
 ```
 
-Consistent with roles_v1 baseline: L=0.82-0.84, F=0.88-0.90. The rule-based
-strategic policy has reached a local optimum — parameter tuning and incremental
-algorithmic changes all land within ±1-2pp noise.
+Automated hill-climbing optimizer (`scripts/optimizer.py`) tested ±1 for all 14
+integer parameters across all 3 roles (80 experiments). Found 2 genuine improvements:
+- `landlord.lead_tempo_plan_weight`: 1 → 2 (+3% all_strategic landlord)
+- `landlord.opening_resilience_weight`: 2 → 1 (+4% all_strategic landlord)
 
-Further improvement requires fundamentally different approaches:
-- 2-ply minimax: consider opponent responses when evaluating plays
-- Probabilistic opponent hand estimation: infer opponent holdings beyond pass constraints
-- Better MC simulation: pass real relationships, use strategic policy in simulation
-- Learned evaluation: replace hand-crafted scoring with neural network (DouZero-style)
+MC threshold upgrade (15→20 cards) enables MC simulation earlier in the game.
+Light strategic policy in simulation was tested but too slow (33+ min for 500 games).
+RuleBasedPolicy in simulation with higher threshold gives the best speed/quality tradeoff.
+
+Failed experiments in this iteration:
+- `guaranteed_win_bonus` (card counting heuristic): -6% regression in all_strategic.
+  The bonus helped farmers (2 players) more than landlord (1 player). Reverted.
+- `light_strategic_decide` in MC simulation: 10x slower, killed after 33 minutes.
+  MC quality improvement doesn't justify the performance cost. Reverted.
+- Weight tuning via CLI overrides (±1 for all params, all roles): ±1% noise.
+  CLI applies to all roles, can't test role-specific changes. Replaced by optimizer.
 
 Keep rejected candidates out of commits. Commit only promoted strategy versions
 and reusable evaluation tooling.
