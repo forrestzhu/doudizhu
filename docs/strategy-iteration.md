@@ -308,6 +308,28 @@ v5→roles_v1 iteration attempts:
 - All roles `stranded_risk_weight=0`: landlord +6pp, farmers neutral. Identical
   to landlord-only change for both placements.
 
+roles_v1 → v10 iteration attempts (all failed):
+
+- `lead_counter_vulnerability` (penalty for easily-countered leads): massive regression
+  (-4.6pp all_strategic). Penalizing small leads makes AI too conservative;
+  small leads are correct for burning opponent turns. Also tried as bonus
+  (`lead_counter_quality_bonus`) for hard-to-counter leads: still regressed
+  (-1pp all_strategic). The counter-cost signal conflicts with existing balance.
+- MC sample count 30→50: zero measurable effect (identical results on same seeds).
+  30 samples already provides sufficient accuracy for candidate differentiation.
+- MC threshold 20→24: zero measurable effect (within ±1% on same seed).
+  The additional coverage doesn't affect enough game states.
+- Dynamic urgency (2x opponent_urgency_weight when min opponent ≤ 2 cards):
+  zero measurable effect. The specific edge cases (1-2 card opponents with
+  matching hand types) are too rare for this to matter.
+- Random multi-parameter search (30 trials, ±2 perturbation on 2-4 params per role):
+  all within noise. Top trial (T3, Σ=+0.050 on 300 games) was identical to
+  baseline on same seed at 1000 games (all_strategic 0.518 vs 0.513).
+
+Key lesson: **Always compare on the same random_source seeds.** Different seeds
+can produce ±3pp apparent differences that are pure variance. The 500-game
+tournament standard error is ~2pp per placement.
+
 roles_v1 algorithmic iteration attempts (all within ±2pp noise):
 
 - `response_overkill`: penalize response plays that use much more strength
