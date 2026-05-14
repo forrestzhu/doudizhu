@@ -888,15 +888,28 @@ fn choose_strategic_candidate(
         return None;
     }
     let outside = outside_cards(view);
+    let outside_info = OutsideInfo::from_outside(&outside);
     let models = build_opponent_models(view);
     let other_pids: Vec<usize> = (0..view.hand_counts.len())
         .filter(|&pid| pid != view.self_id.0 && view.hand_counts[pid] > 0)
         .collect();
     let mc_samples = precompute_mc_samples(view, &outside, &other_pids, &models);
     let mut plan_cache = BTreeMap::new();
+    let mut guaranteed_win_cache = BTreeMap::new();
     candidates.sort_by_key(|hand| {
         let remaining = remaining_after(&view.hand, &hand.cards);
         let winning = !remaining.is_empty();
+        let guaranteed_win = !remaining.is_empty()
+            && is_guaranteed_unbeatable_with_models(hand, &outside_info, &models, view)
+            && remaining.len() <= GUARANTEED_WIN_LIMIT
+            && has_guaranteed_win_sequence(
+                &remaining,
+                &outside_info,
+                &models,
+                view,
+                rules,
+                &mut guaranteed_win_cache,
+            );
         let plan_turns = estimated_play_count_cached(&remaining, rules, &mut plan_cache, config);
         let control = enhanced_threat_control_risk(hand, &models, &outside, view);
         let max_opponent_cards = (0..view.hand_counts.len())
@@ -998,6 +1011,7 @@ fn choose_strategic_candidate(
         };
         (
             winning,
+            !guaranteed_win,
             mc_score,
             tempo_score,
             stranded,
@@ -1632,6 +1646,12 @@ struct OpponentModel {
 struct PassConstraint {
     hand_kind: HandKind,
     strength: u8,
+    reliable: bool,
+}
+
+/// P0 is landlord, P1/P2 are farmers (allies to each other).
+fn are_allies_in_game(pid1: usize, pid2: usize) -> bool {
+    pid1 != 0 && pid2 != 0 && pid1 != pid2
 }
 
 fn build_opponent_models(view: &PlayerView) -> Vec<Option<OpponentModel>> {
@@ -1650,6 +1670,7 @@ fn build_opponent_models(view: &PlayerView) -> Vec<Option<OpponentModel>> {
     }
 
     let mut current_play_to_beat: Option<&ClassifiedHand> = None;
+    let mut last_play_player_id: Option<usize> = None;
 
     for record in &view.history {
         let pid = record.player.0;
@@ -1666,14 +1687,18 @@ fn build_opponent_models(view: &PlayerView) -> Vec<Option<OpponentModel>> {
                 }
                 if let Some(ref hand) = record.accepted_hand {
                     current_play_to_beat = Some(hand);
+                    last_play_player_id = Some(pid);
                 }
             }
             Decision::Pass => {
                 if let Some(to_beat) = current_play_to_beat {
                     if let Some(ref mut model) = models[pid] {
+                        let reliable = last_play_player_id
+                            .is_some_and(|play_pid| !are_allies_in_game(pid, play_pid));
                         model.pass_constraints.push(PassConstraint {
                             hand_kind: to_beat.kind,
                             strength: to_beat.strength,
+                            reliable,
                         });
                     }
                 }
@@ -1686,6 +1711,18 @@ fn build_opponent_models(view: &PlayerView) -> Vec<Option<OpponentModel>> {
 
 fn opponent_can_beat_normal(model: &OpponentModel, hand: &ClassifiedHand) -> bool {
     for constraint in &model.pass_constraints {
+        if constraint.hand_kind == hand.kind && hand.strength >= constraint.strength {
+            return false;
+        }
+    }
+    true
+}
+
+fn opponent_can_beat_reliable(model: &OpponentModel, hand: &ClassifiedHand) -> bool {
+    for constraint in &model.pass_constraints {
+        if !constraint.reliable {
+            continue;
+        }
         if constraint.hand_kind == hand.kind && hand.strength >= constraint.strength {
             return false;
         }
@@ -1712,6 +1749,201 @@ fn outside_cards(view: &PlayerView) -> Vec<Card> {
         .collect()
 }
 
+// --- Guaranteed-win sequence detection ---
+
+struct OutsideInfo {
+    has_rocket: bool,
+    has_any_bomb: bool,
+    bomb_strengths: Vec<u8>,
+    rank_counts: BTreeMap<Rank, usize>,
+}
+
+impl OutsideInfo {
+    fn from_outside(outside: &[Card]) -> Self {
+        let mut rank_counts: BTreeMap<Rank, usize> = BTreeMap::new();
+        for card in outside {
+            *rank_counts.entry(card.rank).or_default() += 1;
+        }
+        let has_rocket = outside.iter().any(|c| c.rank == Rank::BlackJoker)
+            && outside.iter().any(|c| c.rank == Rank::RedJoker);
+        let mut bomb_strengths = Vec::new();
+        let mut has_any_bomb = false;
+        for (rank, &count) in &rank_counts {
+            if count >= 4 {
+                bomb_strengths.push(rank.strength());
+                has_any_bomb = true;
+            }
+        }
+        Self {
+            has_rocket,
+            has_any_bomb,
+            bomb_strengths,
+            rank_counts,
+        }
+    }
+
+    fn has_higher_bomb(&self, strength: u8) -> bool {
+        self.bomb_strengths.iter().any(|&s| s > strength)
+    }
+
+    fn can_form_higher(&self, kind: HandKind, strength: u8, card_count: usize) -> bool {
+        match kind {
+            HandKind::Single => self
+                .rank_counts
+                .keys()
+                .any(|r| r.strength() > strength),
+            HandKind::Pair => self
+                .rank_counts
+                .iter()
+                .any(|(r, &c)| c >= 2 && r.strength() > strength),
+            HandKind::Triple => self
+                .rank_counts
+                .iter()
+                .any(|(r, &c)| c >= 3 && r.strength() > strength),
+            HandKind::TripleWithSingle | HandKind::TripleWithPair => self
+                .rank_counts
+                .iter()
+                .any(|(r, &c)| c >= 3 && r.strength() > strength),
+            HandKind::Straight => self.can_form_higher_sequence(strength, card_count, 1),
+            HandKind::SerialPairs => self.can_form_higher_sequence(strength, card_count / 2, 2),
+            HandKind::Airplane => self.can_form_higher_sequence(strength, card_count / 3, 3),
+            HandKind::AirplaneWithSingles => {
+                self.can_form_higher_sequence(strength, card_count / 4, 3)
+            }
+            HandKind::AirplaneWithPairs => {
+                self.can_form_higher_sequence(strength, card_count / 5, 3)
+            }
+            HandKind::FourWithTwoSingles | HandKind::FourWithTwoPairs => self
+                .rank_counts
+                .iter()
+                .any(|(r, &c)| c >= 4 && r.strength() > strength),
+            HandKind::Bomb | HandKind::Rocket => false,
+        }
+    }
+
+    fn can_form_higher_sequence(
+        &self,
+        strength: u8,
+        length: usize,
+        min_count: usize,
+    ) -> bool {
+        if length == 0 {
+            return false;
+        }
+        let eligible: Vec<Rank> = self
+            .rank_counts
+            .iter()
+            .filter(|(r, &c)| {
+                c >= min_count && can_be_in_sequence(**r)
+            })
+            .map(|(r, _)| *r)
+            .collect();
+
+        if eligible.len() < length {
+            return false;
+        }
+
+        for window in eligible.windows(length) {
+            let consecutive = window
+                .windows(2)
+                .all(|w| w[1].strength() == w[0].strength() + 1);
+            if consecutive && window.last().map(|r| r.strength()).unwrap_or(0) > strength {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+const GUARANTEED_WIN_LIMIT: usize = 8;
+
+/// Combined unbeatable check: uses outside card analysis AND reliable pass constraints.
+/// If outside can't form a higher hand → unbeatable (pure card check).
+/// If outside CAN form higher, but all opponents have reliable pass constraints → unbeatable.
+fn is_guaranteed_unbeatable_with_models(
+    play: &ClassifiedHand,
+    outside_info: &OutsideInfo,
+    models: &[Option<OpponentModel>],
+    view: &PlayerView,
+) -> bool {
+    match play.kind {
+        HandKind::Rocket => true,
+        HandKind::Bomb => {
+            !outside_info.has_higher_bomb(play.strength) && !outside_info.has_rocket
+        }
+        _ => {
+            if outside_info.has_any_bomb || outside_info.has_rocket {
+                return false;
+            }
+            // Pure outside check: no higher hand possible
+            if !outside_info.can_form_higher(play.kind, play.strength, play.cards.len()) {
+                return true;
+            }
+            // Outside CAN form higher — check if all opponents have reliable constraints
+            for (pid, model_slot) in models.iter().enumerate() {
+                if pid == view.self_id.0 {
+                    continue;
+                }
+                if !is_opponent(view, pid) {
+                    continue; // ally won't beat us
+                }
+                if let Some(ref model) = model_slot {
+                    if !opponent_can_beat_reliable(model, play) {
+                        continue; // this opponent has reliable constraint
+                    }
+                }
+                return false; // this opponent might beat us
+            }
+            true // all opponents constrained
+        }
+    }
+}
+
+fn has_guaranteed_win_sequence(
+    remaining: &[Card],
+    outside_info: &OutsideInfo,
+    models: &[Option<OpponentModel>],
+    view: &PlayerView,
+    rules: &dyn RuleSet,
+    cache: &mut BTreeMap<String, bool>,
+) -> bool {
+    if remaining.is_empty() {
+        return true;
+    }
+
+    let key = cards_cache_key(remaining);
+    if let Some(&result) = cache.get(&key) {
+        return result;
+    }
+
+    if let Some(classified) = rules.classify(remaining) {
+        let result = is_guaranteed_unbeatable_with_models(&classified, outside_info, models, view);
+        cache.insert(key, result);
+        return result;
+    }
+
+    let candidates = legal_candidates(remaining, None, rules);
+    for candidate in &candidates {
+        if is_guaranteed_unbeatable_with_models(candidate, outside_info, models, view) {
+            let next_remaining = remaining_after(remaining, &candidate.cards);
+            if has_guaranteed_win_sequence(
+                &next_remaining,
+                outside_info,
+                models,
+                view,
+                rules,
+                cache,
+            ) {
+                cache.insert(key, true);
+                return true;
+            }
+        }
+    }
+
+    cache.insert(key, false);
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1720,6 +1952,25 @@ mod tests {
 
     fn card(rank: Rank, suit: Suit) -> Card {
         Card::suited(rank, suit)
+    }
+
+    fn test_view_for_guaranteed_win() -> PlayerView {
+        PlayerView {
+            self_id: crate::engine::PlayerId(0),
+            hand: vec![],
+            hand_counts: vec![0, 0, 0],
+            relationships: vec![
+                Relationship::SelfPlayer,
+                Relationship::Opponent,
+                Relationship::Opponent,
+            ],
+            history: vec![],
+            previous_play: None,
+        }
+    }
+
+    fn test_empty_models() -> Vec<Option<OpponentModel>> {
+        vec![None, None, None]
     }
 
     #[test]
@@ -2149,6 +2400,7 @@ mod tests {
             pass_constraints: vec![PassConstraint {
                 hand_kind: HandKind::Pair,
                 strength: Rank::Seven.strength(),
+                reliable: true,
             }],
             unknown_count: 3,
         };
@@ -2566,6 +2818,296 @@ mod tests {
         assert!(
             win,
             "farmer with Pair(99) vs landlord 3 low cards should win"
+        );
+    }
+
+    // --- Guaranteed-win detection tests ---
+
+    #[test]
+    fn guaranteed_win_single_then_pair() {
+        let rules = BasicRules;
+        // Hand: [2, 3, 3]. Outside: 3 low singles, no pairs, no bombs.
+        let remaining = vec![
+            card(Rank::Two, Suit::Clubs),
+            card(Rank::Three, Suit::Clubs),
+            card(Rank::Three, Suit::Diamonds),
+        ];
+        // Outside: only 3 singles of rank 4-6 (endgame: opponents hold 3 cards)
+        let outside = vec![
+            card(Rank::Four, Suit::Clubs),
+            card(Rank::Five, Suit::Clubs),
+            card(Rank::Six, Suit::Clubs),
+        ];
+        let info = OutsideInfo::from_outside(&outside);
+        assert!(!info.has_any_bomb && !info.has_rocket, "no bombs/rockets");
+        let mut cache = BTreeMap::new();
+        assert!(
+            has_guaranteed_win_sequence(&remaining, &info, &test_empty_models(), &test_view_for_guaranteed_win(), &rules, &mut cache),
+            "[2, 3,3] should be guaranteed win when outside has only low singles"
+        );
+    }
+
+    #[test]
+    fn guaranteed_win_no_bomb_in_outside() {
+        let rules = BasicRules;
+        // Hand: [2, 3, 3]. Outside has a bomb (4x Fives).
+        let remaining = vec![
+            card(Rank::Two, Suit::Clubs),
+            card(Rank::Three, Suit::Clubs),
+            card(Rank::Three, Suit::Diamonds),
+        ];
+        let outside = vec![
+            card(Rank::Five, Suit::Clubs),
+            card(Rank::Five, Suit::Diamonds),
+            card(Rank::Five, Suit::Hearts),
+            card(Rank::Five, Suit::Spades),
+            card(Rank::Six, Suit::Clubs),
+        ];
+        let info = OutsideInfo::from_outside(&outside);
+        // Outside has bomb → non-power plays are beatable
+        assert!(
+            !is_guaranteed_unbeatable_with_models(
+                &rules
+                    .classify(&[card(Rank::Two, Suit::Clubs)])
+                    .unwrap(),
+                &info,
+                &test_empty_models(),
+                &test_view_for_guaranteed_win(),
+            ),
+            "Single 2 is beatable when outside has a bomb"
+        );
+    }
+
+    #[test]
+    fn guaranteed_win_bomb_unbeatable() {
+        let rules = BasicRules;
+        // Bomb of Aces. Outside has no higher bomb and no rocket.
+        let bomb = rules
+            .classify(&[
+                card(Rank::Ace, Suit::Clubs),
+                card(Rank::Ace, Suit::Diamonds),
+                card(Rank::Ace, Suit::Hearts),
+                card(Rank::Ace, Suit::Spades),
+            ])
+            .unwrap();
+        let outside = vec![
+            card(Rank::Three, Suit::Clubs),
+            card(Rank::Four, Suit::Clubs),
+        ];
+        let info = OutsideInfo::from_outside(&outside);
+        assert!(
+            is_guaranteed_unbeatable_with_models(
+                &bomb,
+                &info,
+                &test_empty_models(),
+                &test_view_for_guaranteed_win(),
+            ),
+            "Bomb of Aces should be unbeatable when outside has no higher bomb/rocket"
+        );
+    }
+
+    #[test]
+    fn guaranteed_win_bomb_beaten_by_rocket() {
+        let rules = BasicRules;
+        let bomb = rules
+            .classify(&[
+                card(Rank::Ace, Suit::Clubs),
+                card(Rank::Ace, Suit::Diamonds),
+                card(Rank::Ace, Suit::Hearts),
+                card(Rank::Ace, Suit::Spades),
+            ])
+            .unwrap();
+        let outside = vec![
+            Card::suited(Rank::BlackJoker, Suit::Spades),
+            Card::suited(Rank::RedJoker, Suit::Hearts),
+            card(Rank::Three, Suit::Clubs),
+        ];
+        let info = OutsideInfo::from_outside(&outside);
+        assert!(
+            !is_guaranteed_unbeatable_with_models(
+                &bomb,
+                &info,
+                &test_empty_models(),
+                &test_view_for_guaranteed_win(),
+            ),
+            "Bomb is beatable when outside has rocket"
+        );
+    }
+
+    #[test]
+    fn guaranteed_win_straight_sequence() {
+        let rules = BasicRules;
+        // Hand: [3,4,5,6,7, 9]. Play Straight [3-7], then Single 9.
+        let remaining = vec![
+            card(Rank::Three, Suit::Clubs),
+            card(Rank::Four, Suit::Clubs),
+            card(Rank::Five, Suit::Clubs),
+            card(Rank::Six, Suit::Clubs),
+            card(Rank::Seven, Suit::Clubs),
+            card(Rank::Nine, Suit::Clubs),
+        ];
+        // Outside: low cards, no rank > 9, no bombs, no 5 consecutive ranks
+        let outside = vec![
+            card(Rank::Four, Suit::Diamonds),
+            card(Rank::Five, Suit::Diamonds),
+            card(Rank::Eight, Suit::Clubs),
+        ];
+        let info = OutsideInfo::from_outside(&outside);
+        assert!(
+            !info.has_any_bomb && !info.has_rocket,
+            "precondition: no bombs/rockets"
+        );
+        let mut cache = BTreeMap::new();
+        assert!(
+            has_guaranteed_win_sequence(&remaining, &info, &test_empty_models(), &test_view_for_guaranteed_win(), &rules, &mut cache),
+            "Straight [3-7] then Single 9 should be guaranteed win"
+        );
+    }
+
+    #[test]
+    fn guaranteed_win_no_sequence_when_higher_exists() {
+        let rules = BasicRules;
+        // Hand: [3, 4]. Outside has [5] — Single 4 is beatable by 5.
+        let remaining = vec![
+            card(Rank::Three, Suit::Clubs),
+            card(Rank::Four, Suit::Clubs),
+        ];
+        let outside = vec![card(Rank::Five, Suit::Clubs)];
+        let info = OutsideInfo::from_outside(&outside);
+        let mut cache = BTreeMap::new();
+        assert!(
+            !has_guaranteed_win_sequence(&remaining, &info, &test_empty_models(), &test_view_for_guaranteed_win(), &rules, &mut cache),
+            "[3,4] should NOT be guaranteed win when outside has 5"
+        );
+    }
+
+    #[test]
+    fn guaranteed_win_rocket_then_single() {
+        let rules = BasicRules;
+        // Hand: [BlackJoker, RedJoker, 3]. Play Rocket, then Single 3.
+        // Outside has no cards > 3 (only 4,5 available in small quantities, no bombs).
+        // Wait, 4 and 5 are > 3, so Single 3 would be beatable.
+        // Better: Hand: [BlackJoker, RedJoker, 2]. Play Rocket, then Single 2.
+        // Outside has only 4-7 (no cards > Two).
+        let remaining = vec![
+            Card::suited(Rank::BlackJoker, Suit::Spades),
+            Card::suited(Rank::RedJoker, Suit::Hearts),
+            card(Rank::Two, Suit::Clubs),
+        ];
+        let outside: Vec<Card> = (4..=7)
+            .flat_map(|s| {
+                let rank = match s {
+                    4 => Rank::Four,
+                    5 => Rank::Five,
+                    6 => Rank::Six,
+                    7 => Rank::Seven,
+                    _ => unreachable!(),
+                };
+                vec![Card::suited(rank, Suit::Clubs), Card::suited(rank, Suit::Diamonds)]
+            })
+            .collect();
+        let info = OutsideInfo::from_outside(&outside);
+        assert!(!info.has_any_bomb, "no bombs in outside");
+        let mut cache = BTreeMap::new();
+        assert!(
+            has_guaranteed_win_sequence(&remaining, &info, &test_empty_models(), &test_view_for_guaranteed_win(), &rules, &mut cache),
+            "Rocket then Single 2 should be guaranteed win"
+        );
+    }
+
+    #[test]
+    fn guaranteed_win_with_reliable_pass_constraints() {
+        let rules = BasicRules;
+        // Hand: [2, 3, 3]. Outside has rank 5 (higher than Pair 3).
+        // Normally Pair 3 is beatable. But both opponents have reliable pass constraints
+        // saying they passed on Pair(strength=3), meaning they can't beat Pair(3).
+        let remaining = vec![
+            card(Rank::Two, Suit::Clubs),
+            card(Rank::Three, Suit::Clubs),
+            card(Rank::Three, Suit::Diamonds),
+        ];
+        let outside = vec![
+            card(Rank::Five, Suit::Clubs),
+            card(Rank::Five, Suit::Diamonds),
+            card(Rank::Six, Suit::Clubs),
+        ];
+        let info = OutsideInfo::from_outside(&outside);
+        // Pure outside check: Pair 3 is beatable (outside has Pair 5)
+        let pair3 = rules
+            .classify(&[card(Rank::Three, Suit::Clubs), card(Rank::Three, Suit::Diamonds)])
+            .unwrap();
+        assert!(
+            info.can_form_higher(pair3.kind, pair3.strength, pair3.cards.len()),
+            "precondition: outside CAN form higher pair"
+        );
+        // Now provide models with reliable pass constraints
+        let models: Vec<Option<OpponentModel>> = vec![
+            None, // self (P0)
+            Some(OpponentModel {
+                played_cards: BTreeSet::new(),
+                pass_constraints: vec![PassConstraint {
+                    hand_kind: HandKind::Pair,
+                    strength: Rank::Three.strength(),
+                    reliable: true, // opponent passed on our Pair(3) — genuine
+                }],
+                unknown_count: 1,
+            }),
+            Some(OpponentModel {
+                played_cards: BTreeSet::new(),
+                pass_constraints: vec![PassConstraint {
+                    hand_kind: HandKind::Pair,
+                    strength: Rank::Three.strength(),
+                    reliable: true,
+                }],
+                unknown_count: 2,
+            }),
+        ];
+        let view = test_view_for_guaranteed_win();
+        let mut cache = BTreeMap::new();
+        assert!(
+            has_guaranteed_win_sequence(&remaining, &info, &models, &view, &rules, &mut cache),
+            "[2, 3,3] should be guaranteed win when both opponents reliably passed on Pair(3)"
+        );
+    }
+
+    #[test]
+    fn guaranteed_win_unreliable_ally_pass_ignored() {
+        let rules = BasicRules;
+        // Same setup but pass constraints are unreliable (ally passes)
+        let remaining = vec![
+            card(Rank::Two, Suit::Clubs),
+            card(Rank::Three, Suit::Clubs),
+            card(Rank::Three, Suit::Diamonds),
+        ];
+        let outside = vec![
+            card(Rank::Five, Suit::Clubs),
+            card(Rank::Five, Suit::Diamonds),
+            card(Rank::Six, Suit::Clubs),
+        ];
+        let info = OutsideInfo::from_outside(&outside);
+        // Models with unreliable constraints (ally passed on ally's play)
+        let models: Vec<Option<OpponentModel>> = vec![
+            None,
+            Some(OpponentModel {
+                played_cards: BTreeSet::new(),
+                pass_constraints: vec![PassConstraint {
+                    hand_kind: HandKind::Pair,
+                    strength: Rank::Three.strength(),
+                    reliable: false, // ally pass — should be ignored
+                }],
+                unknown_count: 1,
+            }),
+            Some(OpponentModel {
+                played_cards: BTreeSet::new(),
+                pass_constraints: vec![],
+                unknown_count: 2,
+            }),
+        ];
+        let view = test_view_for_guaranteed_win();
+        let mut cache = BTreeMap::new();
+        assert!(
+            !has_guaranteed_win_sequence(&remaining, &info, &models, &view, &rules, &mut cache),
+            "unreliable ally pass should not make Pair(3) unbeatable when outside has higher"
         );
     }
 }
