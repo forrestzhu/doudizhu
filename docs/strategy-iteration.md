@@ -381,5 +381,18 @@ Further improvement requires fundamentally different approaches:
 - Learned evaluation: replace hand-crafted scoring with neural network (DouZero-style)
 - Probabilistic opponent hand estimation: infer opponent holdings beyond pass constraints
 
+## v10 Iteration Summary
+
+246+ experiments conducted (216 prior + 30 random search + algorithmic):
+- All within ±2% noise on same-seed A/B comparison
+- Confirmed roles_v1 (v9) as local optimum across multiple dimensions
+- Key lesson: always compare on same `random_source` seeds; ±3pp cross-seed
+  variance is normal for 500-game tournaments
+
+Evaluation baseline (1000 games, seed 1778726250286786000):
+- landlord_strategic: 0.782
+- farmers_strategic: 0.891
+- all_strategic: landlord=0.513, farmer=0.487
+
 Keep rejected candidates out of commits. Commit only promoted strategy versions
 and reusable evaluation tooling.
