@@ -4,6 +4,20 @@ const { _electron: electron } = require('playwright');
 
 const projectRoot = path.resolve(__dirname, '../..');
 
+async function playFirstSelfCard(page) {
+  await expect(page.locator('#playButton')).toBeVisible();
+  const firstCard = page.locator('#player0 .card[aria-label]').first();
+  const card = await firstCard.getAttribute('aria-label');
+
+  await firstCard.click({ position: { x: 6, y: 8 } });
+  await page.getByRole('button', { name: '出牌' }).click();
+  return card;
+}
+
+function seedFromMeta(meta) {
+  return Number(meta.match(/Seed (\d+)/)?.[1]);
+}
+
 test.describe('Electron auto-play table', () => {
   let app;
   let page;
@@ -22,10 +36,9 @@ test.describe('Electron auto-play table', () => {
   });
 
   test('starts the initial player view through startGame', async () => {
-    await expect(page.locator('#roundMeta')).toContainText('Seed 42');
-    await expect(page.locator('#roundMeta')).toContainText('game-');
+    await expect(page.locator('#roundMeta')).toHaveText(/Seed \d+ · game-/);
     await expect(page.locator('#viewerText')).toHaveText('玩家 0 视角 · 地主');
-    await expect(page.locator('#currentPlayerText')).toHaveText('轮到 玩家 0');
+    await expect(page.locator('#currentPlayerText')).toHaveText('轮到你出牌');
     await expect(page.locator('#winnerOverlay')).toBeHidden();
 
     await expect(page.locator('#player0 .seat-header h2')).toHaveText('玩家 0');
@@ -33,10 +46,11 @@ test.describe('Electron auto-play table', () => {
     await expect(page.locator('#player0 .seat-header')).toContainText('自己');
     await expect(page.locator('#player0 .seat-header')).toContainText('20 张');
     await expect(page.locator('#player0 .card[aria-label]')).toHaveCount(20);
+    const handRows = await page.locator('#player0 .hand-cards .card[aria-label]').evaluateAll((cards) => [
+      ...new Set(cards.map((card) => Math.round(card.getBoundingClientRect().top))),
+    ]);
+    expect(handRows).toHaveLength(1);
     await expect(page.locator('#player0 .bottom-owned-card')).toHaveCount(3);
-    await expect(page.locator('#player0 .bottom-owned-card[aria-label="7D"]')).toHaveCount(1);
-    await expect(page.locator('#player0 .bottom-owned-card[aria-label="QS"]')).toHaveCount(1);
-    await expect(page.locator('#player0 .bottom-owned-card[aria-label="AS"]')).toHaveCount(1);
 
     await expect(page.locator('#player1 .role-badge')).toHaveText('农民');
     await expect(page.locator('#player1 .card[aria-label]')).toHaveCount(0);
@@ -89,51 +103,65 @@ test.describe('Electron auto-play table', () => {
 
   test('highlights hinted cards only in the current viewer hand', async () => {
     await page.getByRole('button', { name: '提示' }).click();
-    await expect(page.locator('#statusText')).toContainText('提示');
-    await expect(page.locator('#player0 .hinted-card[aria-label]')).toHaveCount(1);
-    await expect(page.locator('#player0 .hinted-card[aria-label="3D"]')).toHaveCount(1);
-    await expect(page.locator('#player1 .hinted-card')).toHaveCount(0);
-    await expect(page.locator('#player2 .hinted-card')).toHaveCount(0);
+    await expect(page.locator('#statusText')).toHaveText('AI推荐');
+    await page.waitForFunction(() => document.querySelectorAll('#player0 .selected-card[aria-label]').length > 0);
+    await expect(page.locator('#player1 .selected-card')).toHaveCount(0);
+    await expect(page.locator('#player2 .selected-card')).toHaveCount(0);
   });
 
-  test('single step appends public history and updates play zone', async () => {
+  test('manual play appends public history and updates play zone', async () => {
     await expect(page.locator('#historyList .history-item')).toHaveCount(0);
 
-    await page.getByRole('button', { name: '单步' }).click();
-    await expect(page.locator('#statusText')).toHaveText('已单步');
-    await expect(page.locator('#historyList .history-item')).toHaveCount(1);
-    await expect(page.locator('#historyList')).toContainText('#1 玩家 0 出牌 Straight');
-    await expect(page.locator('#play0 .card')).toHaveCount(6);
-    await expect(page.locator('#currentPlayerText')).toHaveText('轮到 玩家 1');
+    const manualCard = await playFirstSelfCard(page);
+
+    await expect(page.locator('#historyList .history-item').last()).toContainText('玩家 0 出牌 Single');
+    await expect(page.locator('#play0 .card[aria-label]')).toHaveCount(1);
+    await expect(page.locator(`#play0 .card[aria-label="${manualCard}"]`)).toHaveCount(1);
   });
 
-  test('autoplay grows public history', async () => {
-    await page.locator('#autoplayToggle').check();
+  test('preserves manual play when autoplay advances later turns', async () => {
+    const manualCard = await playFirstSelfCard(page);
+
     await page.waitForFunction(() => document.querySelectorAll('#historyList .history-item').length >= 2, null, {
-      timeout: 10_000,
+      timeout: 15_000,
     });
-    await page.locator('#autoplayToggle').uncheck();
+    await expect(page.locator('#play0 .card[aria-label]')).toHaveCount(1);
+    await expect(page.locator(`#play0 .card[aria-label="${manualCard}"]`)).toHaveCount(1);
+    await expect(page.locator('#historyList')).toContainText(manualCard);
   });
 
-  test('autoplay completes the seed 42 game', async () => {
-    await page.locator('#autoplayToggle').check();
+  test('autoplay grows public history after a manual play', async () => {
+    await playFirstSelfCard(page);
 
-    await expect(page.locator('#winnerTitle')).toHaveText('玩家 0 获胜', {
+    await page.waitForFunction(() => document.querySelectorAll('#historyList .history-item').length >= 2, null, {
+      timeout: 15_000,
+    });
+    await expect(page.locator('#autoplayToggle')).not.toBeChecked();
+  });
+
+  test('autoplay stops at the next user decision after a manual play', async () => {
+    await playFirstSelfCard(page);
+
+    await expect(page.locator('#currentPlayerText')).toHaveText('轮到你出牌', {
       timeout: 45_000,
     });
     await expect(page.locator('#autoplayToggle')).not.toBeChecked();
-    await expect(page.locator('#historyList .history-item')).toHaveCount(25);
-    await expect(page.locator('#player0 .card[aria-label]')).toHaveCount(0);
+    await expect(page.locator('#playButton')).toBeVisible();
   });
 
-  test('redeals a different deterministic seed from the toolbar', async () => {
+  test('redeals a different random seed from the toolbar', async () => {
+    const initialMeta = await page.locator('#roundMeta').textContent();
+    const initialSeed = seedFromMeta(initialMeta);
+
     await page.locator('#seedInput').fill('43');
     await page.getByRole('button', { name: '重新发牌' }).click();
 
-    await expect(page.locator('#roundMeta')).toContainText('Seed 43');
-    await expect(page.locator('#bottomCards .card[aria-label="6H"]')).toHaveCount(1);
-    await expect(page.locator('#bottomCards .card[aria-label="7D"]')).toHaveCount(1);
-    await expect(page.locator('#bottomCards .card[aria-label="8C"]')).toHaveCount(1);
+    await page.waitForFunction((meta) => document.querySelector('#roundMeta').textContent !== meta, initialMeta);
+    await expect(page.locator('#roundMeta')).toHaveText(/Seed \d+ · game-/);
+    const nextSeed = seedFromMeta(await page.locator('#roundMeta').textContent());
+    expect(nextSeed).not.toBe(initialSeed);
+    expect(nextSeed).not.toBe(43);
+    await expect(page.locator('#bottomCards .card[aria-label]')).toHaveCount(3);
   });
 
   test('does not leak hidden hands through non-self seat text or aria labels', async () => {

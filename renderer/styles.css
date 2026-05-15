@@ -329,14 +329,25 @@ input {
 .hand-cards {
   min-height: 90px;
   gap: 2px;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  justify-content: center;
+  overflow: visible;
 }
 
 .hand-cards .card {
-  margin-right: -12px;
+  flex: 0 0 auto;
+  margin-right: -28px;
+  z-index: 1;
 }
 
 .hand-cards .card:last-child {
   margin-right: 0;
+}
+
+.hand-cards .card:hover,
+.hand-cards .card.selected-card {
+  z-index: 3;
 }
 
 .hidden-cards {
@@ -381,6 +392,11 @@ input {
   color: var(--text);
   display: flex;
   gap: 20px;
+}
+
+.my-turn {
+  color: var(--gold);
+  animation: pulse 1.2s ease-in-out infinite;
 }
 
 /* ── Play Zones ── */
@@ -438,7 +454,7 @@ input {
 .bottom-bar .seat {
   min-width: unset;
   width: 100%;
-  max-width: 900px;
+  max-width: 980px;
   background: rgba(255, 255, 255, 0.04);
   border-color: rgba(255, 255, 255, 0.08);
 }
@@ -453,12 +469,20 @@ input {
 
 .bottom-bar .hand-cards {
   justify-content: center;
-  min-height: 92px;
-  gap: 2px;
+  min-height: 84px;
+  gap: 0;
+  padding-right: 28px;
 }
 
 .bottom-bar .hand-cards .card {
-  margin-right: -10px;
+  width: 46px;
+  height: 68px;
+  margin-right: -30px;
+  justify-items: start;
+  align-items: start;
+  grid-template-rows: auto auto 1fr;
+  padding: 5px 4px;
+  border-radius: 4px;
 }
 
 .bottom-bar .hand-cards .card:last-child {
@@ -506,6 +530,25 @@ input {
   box-shadow: 0 6px 16px rgba(74, 144, 217, 0.35);
 }
 
+.card.selected-card {
+  transform: translateY(-14px);
+  border-color: #e8c840;
+  box-shadow: 0 8px 18px rgba(232, 200, 64, 0.4);
+}
+
+.card.clickable-card {
+  cursor: pointer;
+}
+
+.card.clickable-card:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3);
+}
+
+.card.clickable-card.selected-card:hover {
+  transform: translateY(-14px);
+}
+
 .card em {
   position: absolute;
   right: 3px;
@@ -530,6 +573,14 @@ input {
 .card span {
   font-size: 15px;
   line-height: 1;
+}
+
+.hand-cards .card strong {
+  font-size: 16px;
+}
+
+.hand-cards .card span {
+  font-size: 13px;
 }
 
 .card.red {
@@ -752,6 +803,11 @@ input {
   to { transform: translateX(0); }
 }
 
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 /* ── Responsive ── */
 
 @media (max-width: 1100px) {
@@ -773,7 +829,9 @@ input {
   }
 
   .bottom-bar .hand-cards .card {
-    margin-right: -14px;
+    width: 42px;
+    height: 62px;
+    margin-right: -28px;
   }
 }
 
