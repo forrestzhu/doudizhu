@@ -1,7 +1,7 @@
 use crate::cards::Card;
 use crate::decision::{
-    legal_candidates, DecisionPolicy, RoleStrategyConfig, RuleBasedPolicy, RuleBasedPolicyConfig,
-    StrategicPolicy,
+    legal_candidates, Decision, DecisionPolicy, RoleStrategyConfig, RuleBasedPolicy,
+    RuleBasedPolicyConfig, StrategicPolicy,
 };
 use crate::engine::{Deal, Game, GameConfig, GameError, GameStatus, PlayerId, TurnRecord};
 use crate::rules::{BasicRules, ClassifiedHand, RuleSet};
@@ -250,6 +250,16 @@ pub struct SessionReport {
     pub seed: u64,
     pub view: GameViewReport,
     pub hint: HintReport,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionAction {
+    Auto,
+    Manual {
+        #[serde(default)]
+        cards: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1026,19 +1036,7 @@ pub fn run_session_after_steps_with_landlord_policy(
         ..GameConfig::default()
     };
     let mut game = Game::new(deal, config)?;
-    let landlord: Box<dyn DecisionPolicy> = match landlord_policy {
-        LandlordPolicy::RuleBased => Box::new(RuleBasedPolicy::new(rule_config)),
-        LandlordPolicy::Strategic => Box::new(StrategicPolicy::from_role_configs(strategy_config)),
-    };
-    let farmer1: Box<dyn DecisionPolicy> = match landlord_policy {
-        LandlordPolicy::RuleBased => Box::new(RuleBasedPolicy::new(rule_config)),
-        LandlordPolicy::Strategic => Box::new(StrategicPolicy::from_role_configs(strategy_config)),
-    };
-    let farmer2: Box<dyn DecisionPolicy> = match landlord_policy {
-        LandlordPolicy::RuleBased => Box::new(RuleBasedPolicy::new(rule_config)),
-        LandlordPolicy::Strategic => Box::new(StrategicPolicy::from_role_configs(strategy_config)),
-    };
-    let mut policies: Vec<Box<dyn DecisionPolicy>> = vec![landlord, farmer1, farmer2];
+    let mut policies = strategic_policies(rule_config, landlord_policy, strategy_config);
     for _ in 0..steps {
         if game.finished() {
             break;
@@ -1052,8 +1050,124 @@ pub fn run_session_after_steps_with_landlord_policy(
         deterministic: true,
         seed,
         view: game_view_report(&game, seed, viewer)?,
-        hint: hint_report(&game, seed, viewer)?,
+        hint: hint_report(&game, seed, viewer, landlord_policy, &strategy_config)?,
     })
+}
+
+pub fn run_session_manual_step(
+    seed: u64,
+    viewer: usize,
+    steps: usize,
+    manual_cards: Option<Vec<Card>>,
+    max_turns: usize,
+    rule_config: RuleBasedPolicyConfig,
+    landlord_policy: LandlordPolicy,
+    strategy_config: RoleStrategyConfig,
+) -> Result<SessionReport, ArenaError> {
+    let deal = Deal::from_seed(seed, 3);
+    let config = GameConfig {
+        max_turns,
+        ..GameConfig::default()
+    };
+    let mut game = Game::new(deal, config)?;
+    let mut policies = strategic_policies(rule_config, landlord_policy, strategy_config);
+
+    // Replay AI steps
+    for _ in 0..steps {
+        if game.finished() {
+            break;
+        }
+        let player = game.current_player();
+        game.step_current(policies[player.0].as_mut())?;
+    }
+
+    // Apply manual decision
+    if !game.finished() {
+        let decision = match manual_cards {
+            Some(cards) => Decision::Play(cards),
+            None => Decision::Pass,
+        };
+        let current = game.current_player();
+        game.submit_decision(current, decision)?;
+    }
+
+    Ok(SessionReport {
+        schema_version: "2026-05-11".to_string(),
+        deterministic: true,
+        seed,
+        view: game_view_report(&game, seed, viewer)?,
+        hint: hint_report(&game, seed, viewer, landlord_policy, &strategy_config)?,
+    })
+}
+
+pub fn run_session_actions(
+    seed: u64,
+    viewer: usize,
+    actions: &[SessionAction],
+    max_turns: usize,
+    rule_config: RuleBasedPolicyConfig,
+    landlord_policy: LandlordPolicy,
+    strategy_config: RoleStrategyConfig,
+) -> Result<SessionReport, ArenaError> {
+    let deal = Deal::from_seed(seed, 3);
+    let config = GameConfig {
+        max_turns,
+        ..GameConfig::default()
+    };
+    let mut game = Game::new(deal, config)?;
+    let mut policies = strategic_policies(rule_config, landlord_policy, strategy_config);
+
+    for action in actions {
+        if game.finished() {
+            break;
+        }
+        apply_session_action(&mut game, &mut policies, action)?;
+    }
+
+    Ok(SessionReport {
+        schema_version: "2026-05-11".to_string(),
+        deterministic: true,
+        seed,
+        view: game_view_report(&game, seed, viewer)?,
+        hint: hint_report(&game, seed, viewer, landlord_policy, &strategy_config)?,
+    })
+}
+
+fn apply_session_action(
+    game: &mut Game,
+    policies: &mut [Box<dyn DecisionPolicy>],
+    action: &SessionAction,
+) -> Result<(), ArenaError> {
+    match action {
+        SessionAction::Auto => {
+            let player = game.current_player();
+            game.step_current(policies[player.0].as_mut())?;
+        }
+        SessionAction::Manual { cards } => {
+            let decision = if cards.is_empty() {
+                Decision::Pass
+            } else {
+                Decision::Play(parse_cards(cards)?)
+            };
+            let current = game.current_player();
+            game.submit_decision(current, decision)?;
+        }
+    }
+    Ok(())
+}
+
+fn strategic_policies(
+    rule_config: RuleBasedPolicyConfig,
+    landlord_policy: LandlordPolicy,
+    strategy_config: RoleStrategyConfig,
+) -> Vec<Box<dyn DecisionPolicy>> {
+    let make_policy = || match landlord_policy {
+        LandlordPolicy::RuleBased => {
+            Box::new(RuleBasedPolicy::new(rule_config)) as Box<dyn DecisionPolicy>
+        }
+        LandlordPolicy::Strategic => Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+    };
+    vec![make_policy(), make_policy(), make_policy()]
 }
 
 pub fn run_trace(seed: u64, max_turns: usize) -> Result<EpisodeReport, ArenaError> {
@@ -1389,16 +1503,27 @@ fn game_view_report(game: &Game, seed: u64, viewer: usize) -> Result<GameViewRep
     })
 }
 
-fn hint_report(game: &Game, seed: u64, viewer: usize) -> Result<HintReport, ArenaError> {
+fn hint_report(
+    game: &Game,
+    seed: u64,
+    viewer: usize,
+    landlord_policy: LandlordPolicy,
+    strategy_config: &RoleStrategyConfig,
+) -> Result<HintReport, ArenaError> {
     let view = game.player_view_checked(PlayerId(viewer))?;
     let hints = legal_candidates(&view.hand, view.previous_play.as_ref(), game.rules());
     let legal_hints: Vec<Vec<String>> =
         hints.iter().map(|hand| card_strings(&hand.cards)).collect();
     let recommended = if game.current_player() == PlayerId(viewer) {
-        let mut policy = RuleBasedPolicy::default();
+        let mut policy: Box<dyn DecisionPolicy> = match landlord_policy {
+            LandlordPolicy::RuleBased => Box::new(RuleBasedPolicy::default()),
+            LandlordPolicy::Strategic => {
+                Box::new(StrategicPolicy::from_role_configs(strategy_config.clone()))
+            }
+        };
         match policy.decide(&view, game.rules()) {
-            crate::decision::Decision::Play(cards) => Some(card_strings(&cards)),
-            crate::decision::Decision::Pass => Some(Vec::new()),
+            Decision::Play(cards) => Some(card_strings(&cards)),
+            Decision::Pass => Some(Vec::new()),
         }
     } else {
         None
@@ -1505,10 +1630,11 @@ fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
 mod tests {
     use crate::arena::{
         run_deal, run_scenario_str, run_seeded_games_with_landlord_policy, run_session,
-        run_session_after_steps, run_trace, run_trace_with_config, ArenaError, LandlordPolicy,
+        run_session_actions, run_session_after_steps, run_trace, run_trace_with_config, ArenaError,
+        LandlordPolicy, SessionAction,
     };
     use crate::cards::{Card, Rank, Suit};
-    use crate::decision::{RoleStrategyConfig, RuleBasedPolicyConfig, StrategicPolicyConfig};
+    use crate::decision::{RoleStrategyConfig, RuleBasedPolicyConfig};
     use crate::engine::Deal;
     use crate::rules::{BasicRules, RuleSet};
     use std::str::FromStr;
@@ -1779,5 +1905,29 @@ mod tests {
         assert_eq!(report.view.previous_player, Some(2));
         assert!(report.view.previous_play.is_none());
         assert_eq!(report.hint.recommended, Some(vec!["3C".to_string()]));
+    }
+
+    #[test]
+    fn action_session_preserves_manual_play_before_later_auto_steps() {
+        let report = run_session_actions(
+            42,
+            0,
+            &[
+                SessionAction::Manual {
+                    cards: vec!["3D".to_string()],
+                },
+                SessionAction::Auto,
+            ],
+            1_000,
+            RuleBasedPolicyConfig::default(),
+            LandlordPolicy::Strategic,
+            RoleStrategyConfig::default(),
+        )
+        .unwrap();
+
+        assert!(report.view.history.len() >= 2);
+        assert_eq!(report.view.history[0].player, 0);
+        assert_eq!(report.view.history[0].decision, "Play");
+        assert_eq!(report.view.history[0].cards, ["3D"]);
     }
 }

@@ -5,12 +5,16 @@ const state = {
   hint: null,
   autoplayTimer: null,
   stepInFlight: false,
+  selectedCards: [],
+  hintIndex: -1,
 };
 
 const elements = {
   seedInput: document.querySelector('#seedInput'),
   dealButton: document.querySelector('#dealButton'),
   hintButton: document.querySelector('#hintButton'),
+  playButton: document.querySelector('#playButton'),
+  passButton: document.querySelector('#passButton'),
   stepButton: document.querySelector('#stepButton'),
   autoplayToggle: document.querySelector('#autoplayToggle'),
   roundMeta: document.querySelector('#roundMeta'),
@@ -66,8 +70,10 @@ const rankLabels = {
   A: 'A',
 };
 
-elements.dealButton.addEventListener('click', () => startGame());
+elements.dealButton.addEventListener('click', () => newGame());
 elements.hintButton.addEventListener('click', () => requestHint());
+elements.playButton.addEventListener('click', () => submitPlay());
+elements.passButton.addEventListener('click', () => submitPass());
 elements.stepButton.addEventListener('click', () => requestStep());
 elements.autoplayToggle.addEventListener('change', () => setAutoplay(elements.autoplayToggle.checked));
 elements.seedInput.addEventListener('change', () => {
@@ -76,7 +82,7 @@ elements.seedInput.addEventListener('change', () => {
 });
 elements.newGameBtn.addEventListener('click', () => {
   hideWinner();
-  startGame();
+  newGame();
 });
 elements.historyTrigger.addEventListener('click', toggleHistory);
 elements.drawerClose.addEventListener('click', () => {
@@ -87,14 +93,21 @@ for (const tab of elements.viewerTabs) {
   tab.addEventListener('click', () => switchViewer(Number(tab.dataset.viewer)));
 }
 
-startGame();
+newGame();
 
-async function startGame() {
-  state.seed = normalizedSeed();
+function newGame() {
+  state.seed = Date.now();
+  elements.seedInput.value = String(state.seed);
   state.hint = null;
+  state.selectedCards = [];
+  state.hintIndex = -1;
   stopAutoplay();
   hideWinner();
   setBusy(true, '发牌中');
+  startGameInternal();
+}
+
+async function startGameInternal() {
   try {
     state.view = await window.doudizhu.startGame({
       seed: state.seed,
@@ -107,14 +120,19 @@ async function startGame() {
   } finally {
     setBusy(false);
   }
+  if (state.view && state.view.winner == null) {
+    startAutoplayLoop();
+  }
 }
 
 async function switchViewer(viewer) {
   state.viewer = viewer;
   state.hint = null;
+  state.selectedCards = [];
+  state.hintIndex = -1;
   setActiveViewer();
   if (!state.view?.game_id) {
-    await startGame();
+    await newGame();
     return;
   }
 
@@ -137,6 +155,9 @@ async function requestHint() {
   if (!state.view?.game_id) {
     return;
   }
+  if (!isMyTurn()) {
+    return;
+  }
 
   setBusy(true, '提示中');
   try {
@@ -144,12 +165,106 @@ async function requestHint() {
       gameId: state.view.game_id,
       viewer: state.viewer,
     });
+
+    const candidates = state.hint.candidates || [];
+    const recommended = state.hint.recommended;
+
+    // First press: use strategic recommendation
+    if (state.hintIndex === -1 && recommended && recommended.length > 0) {
+      state.selectedCards = recommended.slice();
+      state.hintIndex = -2; // mark that recommendation was shown
+      render();
+      elements.statusText.textContent = 'AI推荐';
+      return;
+    }
+
+    // Subsequent presses: cycle through all legal candidates
+    if (candidates.length === 0) {
+      elements.statusText.textContent = '暂无提示';
+      return;
+    }
+    const startIdx = state.hintIndex < 0 ? 0 : state.hintIndex + 1;
+    state.hintIndex = startIdx % candidates.length;
+    state.selectedCards = candidates[state.hintIndex].cards.slice();
     render();
-    const count = state.hint.candidates?.length || 0;
-    elements.statusText.textContent = count > 0 ? `提示 ${count} 手` : '暂无提示';
+    elements.statusText.textContent = `提示 ${state.hintIndex + 1}/${candidates.length}`;
   } catch (error) {
     showError(error);
   } finally {
+    setBusy(false);
+  }
+}
+
+async function submitPlay() {
+  if (!state.view?.game_id || !isMyTurn()) {
+    return;
+  }
+  if (state.selectedCards.length === 0) {
+    elements.statusText.textContent = '请先选择要出的牌';
+    return;
+  }
+
+  state.stepInFlight = true;
+  stopAutoplay();
+  setBusy(true, '出牌中');
+  try {
+    const result = await window.doudizhu.manualStep({
+      gameId: state.view.game_id,
+      viewer: state.viewer,
+      cards: state.selectedCards,
+    });
+    state.view = result.view;
+    state.hint = result.hint;
+    state.selectedCards = [];
+    state.hintIndex = -1;
+    render();
+    elements.statusText.textContent = '已出牌';
+    if (state.view.winner !== null && state.view.winner !== undefined) {
+      showWinner(state.view.winner);
+    } else {
+      startAutoplayLoop();
+    }
+  } catch (error) {
+    showError(error);
+  } finally {
+    state.stepInFlight = false;
+    setBusy(false);
+  }
+}
+
+async function submitPass() {
+  if (!state.view?.game_id || !isMyTurn()) {
+    return;
+  }
+  if (!canPass()) {
+    elements.statusText.textContent = '首轮必须出牌';
+    return;
+  }
+
+  state.stepInFlight = true;
+  stopAutoplay();
+  setBusy(true, '不出');
+  try {
+    const result = await window.doudizhu.manualStep({
+      gameId: state.view.game_id,
+      viewer: state.viewer,
+      cards: [],
+    });
+    state.view = result.view;
+    state.hint = result.hint;
+    state.selectedCards = [];
+    state.hintIndex = -1;
+    render();
+    elements.statusText.textContent = '不出';
+    if (state.view.winner !== null && state.view.winner !== undefined) {
+      showWinner(state.view.winner);
+    } else {
+      startAutoplayLoop();
+    }
+  } catch (error) {
+    showError(error);
+  } finally {
+    state.stepInFlight = false;
     setBusy(false);
   }
 }
@@ -164,6 +279,8 @@ async function requestStep() {
 
   state.stepInFlight = true;
   state.hint = null;
+  state.selectedCards = [];
+  state.hintIndex = -1;
   setBusy(true, '执行中');
   try {
     state.view = await window.doudizhu.autoStep({
@@ -190,16 +307,28 @@ function setAutoplay(enabled) {
     stopAutoplay();
     return;
   }
+  startAutoplayLoop();
+}
 
-  if (state.autoplayTimer) {
+function startAutoplayLoop() {
+  stopAutoplay();
+  if (!state.view || state.view.winner != null) {
     return;
   }
 
-  elements.autoplayToggle.checked = true;
   state.autoplayTimer = window.setInterval(() => {
+    if (!state.view || state.view.winner != null) {
+      stopAutoplay();
+      return;
+    }
+    if (isMyTurn()) {
+      stopAutoplay();
+      render();
+      return;
+    }
     requestStep();
-  }, 200);
-  requestStep();
+  }, 150);
+  elements.autoplayToggle.checked = true;
 }
 
 function stopAutoplay() {
@@ -215,6 +344,14 @@ function toggleHistory() {
   drawer.hidden = !drawer.hidden;
 }
 
+function isMyTurn() {
+  return state.view && state.view.current_player === state.viewer && state.view.winner == null;
+}
+
+function canPass() {
+  return state.view && state.view.previous_play != null;
+}
+
 function render() {
   const view = state.view;
   if (!view) {
@@ -224,18 +361,44 @@ function render() {
   elements.roundMeta.textContent = `Seed ${view.seed} · ${view.game_id}`;
   const viewer = view.players.find((player) => player.id === view.viewer);
   elements.viewerText.textContent = `玩家 ${view.viewer} 视角 · ${roleLabel(viewer?.role)}`;
-  elements.currentPlayerText.textContent = view.winner == null ? `轮到 玩家 ${view.current_player}` : '';
+
+  const myTurn = isMyTurn();
+  if (view.winner != null) {
+    elements.currentPlayerText.textContent = '';
+  } else if (myTurn) {
+    elements.currentPlayerText.textContent = '轮到你出牌';
+    elements.currentPlayerText.classList.add('my-turn');
+  } else {
+    elements.currentPlayerText.textContent = `轮到 玩家 ${view.current_player}`;
+    elements.currentPlayerText.classList.remove('my-turn');
+  }
   elements.winnerText.textContent = '';
+
   renderBottomCards(view.bottom_cards);
   renderHistory(view.history);
   renderPlayZones(view.history, view.viewer);
   setActiveViewer();
+  updateActionButtons(myTurn);
 
   const orderedPlayers = tableOrder(view.viewer);
-  const hintedCards = new Set(state.hint?.recommended || []);
   for (const [slot, playerId] of orderedPlayers.entries()) {
     const player = view.players.find((entry) => entry.id === playerId);
-    renderPlayer(elements.players[slot], player, playerId === view.viewer, view.bottom_cards, hintedCards);
+    renderPlayer(elements.players[slot], player, playerId === view.viewer, view.bottom_cards, myTurn);
+  }
+}
+
+function updateActionButtons(myTurn) {
+  if (myTurn) {
+    elements.playButton.hidden = false;
+    elements.passButton.hidden = false;
+    elements.passButton.disabled = !canPass();
+    elements.stepButton.hidden = true;
+    elements.hintButton.hidden = false;
+  } else {
+    elements.playButton.hidden = true;
+    elements.passButton.hidden = true;
+    elements.stepButton.hidden = false;
+    elements.hintButton.hidden = false;
   }
 }
 
@@ -299,7 +462,7 @@ function renderHistory(history) {
   }
 }
 
-function renderPlayer(container, player, isSelf, bottomCards, hintedCards) {
+function renderPlayer(container, player, isSelf, bottomCards, myTurn) {
   if (!player) {
     return;
   }
@@ -323,11 +486,13 @@ function renderPlayer(container, player, isSelf, bottomCards, hintedCards) {
   cards.className = isSelf ? 'cards hand-cards' : 'cards hidden-cards';
   if (isSelf) {
     const bottomSet = new Set(player.role === 'Landlord' ? bottomCards : []);
+    const selectedSet = new Set(state.selectedCards);
     cards.replaceChildren(
       ...player.visible_hand.map((card) =>
         cardElement(card, {
           isBottomCard: bottomSet.has(card),
-          isHinted: hintedCards.has(card),
+          isSelected: selectedSet.has(card),
+          clickable: myTurn,
         }),
       ),
     );
@@ -344,6 +509,17 @@ function renderPlayer(container, player, isSelf, bottomCards, hintedCards) {
   container.append(header, cards);
 }
 
+function toggleCardSelection(cardCode) {
+  const index = state.selectedCards.indexOf(cardCode);
+  if (index >= 0) {
+    state.selectedCards.splice(index, 1);
+  } else {
+    state.selectedCards.push(cardCode);
+  }
+  state.hintIndex = -1;
+  render();
+}
+
 function cardElement(code, options = {}) {
   const card = document.createElement('div');
   const parsed = parseCard(code);
@@ -351,14 +527,18 @@ function cardElement(code, options = {}) {
   if (options.isBottomCard) {
     card.classList.add('bottom-owned-card');
   }
-  if (options.isHinted) {
-    card.classList.add('hinted-card');
+  if (options.isSelected) {
+    card.classList.add('selected-card');
   }
   card.append(textNode('strong', parsed.rank), textNode('span', parsed.suit));
   card.setAttribute('aria-label', code);
   if (options.isBottomCard) {
     card.dataset.source = 'bottom';
     card.append(textNode('em', '底'));
+  }
+  if (options.clickable) {
+    card.classList.add('clickable-card');
+    card.addEventListener('click', () => toggleCardSelection(code));
   }
   return card;
 }

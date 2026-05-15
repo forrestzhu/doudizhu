@@ -3,8 +3,10 @@ const { execFile } = require('node:child_process');
 const path = require('node:path');
 
 const projectRoot = path.resolve(__dirname, '..');
+const arenaBinary = path.join(projectRoot, 'target', 'debug', 'arena');
 const sessions = new Map();
 let nextGameId = 1;
+let arenaBuildPromise = null;
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -30,6 +32,7 @@ app.whenReady().then(() => {
   ipcMain.handle('set-viewer', async (_event, request) => setViewer(request));
   ipcMain.handle('get-hint', async (_event, request) => getHint(request));
   ipcMain.handle('auto-step', async (_event, request) => autoStep(request));
+  ipcMain.handle('manual-step', async (_event, request) => manualStep(request));
   createWindow();
 
   app.on('activate', () => {
@@ -54,7 +57,8 @@ async function startGame(request = {}) {
   const session = {
     gameId,
     seed,
-    cursor: 0,
+    actions: [],
+    reports: new Map(),
   };
   sessions.set(gameId, session);
 
@@ -80,7 +84,7 @@ async function getHint(request = {}) {
     };
   }
 
-  const report = await sessionReport(session.seed, viewer, session.cursor);
+  const report = await sessionReport(session, viewer);
   return normalizeHintReport(report.hint);
 }
 
@@ -90,33 +94,63 @@ async function autoStep(request = {}) {
   const viewer = normalizedViewer(request.viewer);
   const current = await gameViewFromArena(session, viewer);
   if (current.winner === null || current.winner === undefined) {
-    session.cursor += 1;
+    const candidateActions = [...session.actions, { kind: 'auto' }];
+    const report = await sessionReport(session, viewer, candidateActions);
+    session.actions = candidateActions;
+    session.reports.clear();
+    session.reports.set(String(viewer), report);
+    return normalizeGameView(report.view, session.gameId);
   }
 
-  return gameViewFromArena(session, viewer);
+  return current;
+}
+
+async function manualStep(request = {}) {
+  const gameId = String(request.gameId || '');
+  const session = requireSession(gameId);
+  const viewer = normalizedViewer(request.viewer);
+  const cards = Array.isArray(request.cards) ? request.cards : [];
+  const candidateActions = [...session.actions, { kind: 'manual', cards }];
+  const report = await sessionReport(session, viewer, candidateActions);
+
+  session.actions = candidateActions;
+  session.reports.clear();
+  session.reports.set(String(viewer), report);
+  const view = normalizeGameView(report.view, session.gameId);
+  return { view, hint: normalizeHintReport(report.hint) };
 }
 
 async function gameViewFromArena(session, viewer) {
-  const report = await sessionReport(session.seed, viewer, session.cursor);
+  const report = await sessionReport(session, viewer);
   return normalizeGameView(report.view, session.gameId);
 }
 
-function sessionReport(seed, viewer, steps) {
+function sessionReport(session, viewer, actions = session.actions) {
+  const cacheKey = String(viewer);
+  if (actions === session.actions && session.reports.has(cacheKey)) {
+    return session.reports.get(cacheKey);
+  }
+
   return runArena([
     '--session',
     '--seed',
-    String(seed),
+    String(session.seed),
     '--viewer',
     String(viewer),
-    '--steps',
-    String(steps),
+    '--actions',
+    JSON.stringify(actions),
     '--landlord-policy',
     'strategic',
     '--strategy-file',
     path.join(projectRoot, 'strategies/roles_v1.json'),
     '--format',
     'json',
-  ]);
+  ]).then((report) => {
+    if (actions === session.actions) {
+      session.reports.set(cacheKey, report);
+    }
+    return report;
+  });
 }
 
 function normalizeGameView(view, gameId) {
@@ -200,10 +234,39 @@ function integerOrDefault(value, fallback) {
 }
 
 function runArena(args) {
+  return ensureArenaBuilt().then(() => execArena(args));
+}
+
+function ensureArenaBuilt() {
+  if (!arenaBuildPromise) {
+    arenaBuildPromise = new Promise((resolve, reject) => {
+      execFile(
+        'cargo',
+        ['build', '--quiet', '--bin', 'arena'],
+        {
+          cwd: projectRoot,
+          timeout: 60_000,
+          maxBuffer: 1024 * 1024,
+        },
+        (error, _stdout, stderr) => {
+          if (error) {
+            arenaBuildPromise = null;
+            reject(new Error(stderr.trim() || error.message));
+            return;
+          }
+          resolve();
+        },
+      );
+    });
+  }
+  return arenaBuildPromise;
+}
+
+function execArena(args) {
   return new Promise((resolve, reject) => {
     execFile(
-      'cargo',
-      ['run', '--quiet', '--bin', 'arena', '--', ...args],
+      arenaBinary,
+      args,
       {
         cwd: projectRoot,
         timeout: 30_000,

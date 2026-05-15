@@ -2,11 +2,13 @@ use doudizhu::arena::run_session_after_steps_with_landlord_policy;
 use doudizhu::arena::{
     run_cross_placement_games, run_deal, run_random_tournament, run_random_tournament_from_source,
     run_random_tournament_from_source_opt, run_scenario_file,
-    run_seeded_games_with_landlord_policy, run_trace_with_landlord_policy, LandlordPolicy,
-    PolicyPlacement, TournamentOptions,
+    run_seeded_games_with_landlord_policy, run_session_actions, run_session_manual_step,
+    run_trace_with_landlord_policy, LandlordPolicy, PolicyPlacement, SessionAction,
+    TournamentOptions,
 };
-use doudizhu::{RoleStrategyConfig, RuleBasedPolicyConfig, StrategicPolicyConfig};
+use doudizhu::{Card, RoleStrategyConfig, RuleBasedPolicyConfig, StrategicPolicyConfig};
 use std::path::Path;
+use std::str::FromStr;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -202,15 +204,32 @@ fn main() {
     if has_flag(&args, "--session") {
         let viewer = read_usize_arg(&args, "--viewer").unwrap_or(0);
         let steps = read_usize_arg(&args, "--steps").unwrap_or(0);
-        let report = run_session_after_steps_with_landlord_policy(
-            seed,
-            viewer,
-            steps,
-            max_turns,
-            policy_config,
-            landlord_policy,
-            strategy_config,
-        )
+        let report = if let Some(actions_json) = read_arg(&args, "--actions") {
+            let actions: Vec<SessionAction> =
+                serde_json::from_str(actions_json).unwrap_or_else(|error| {
+                    eprintln!("invalid actions JSON: {error}");
+                    std::process::exit(2);
+                });
+            run_session_actions(
+                seed,
+                viewer,
+                &actions,
+                max_turns,
+                policy_config,
+                landlord_policy,
+                strategy_config,
+            )
+        } else {
+            run_session_after_steps_with_landlord_policy(
+                seed,
+                viewer,
+                steps,
+                max_turns,
+                policy_config,
+                landlord_policy,
+                strategy_config,
+            )
+        }
         .unwrap_or_else(|error| {
             eprintln!("session seed={seed} viewer={viewer} error={error:?}");
             std::process::exit(1);
@@ -221,6 +240,55 @@ fn main() {
         } else {
             println!(
                 "session seed={} viewer={} current_player={} visible_hand={:?}",
+                report.seed,
+                report.view.viewer,
+                report.view.current_player,
+                report.view.visible_hand
+            );
+        }
+
+        return;
+    }
+
+    if has_flag(&args, "--manual-step") {
+        let viewer = read_usize_arg(&args, "--viewer").unwrap_or(0);
+        let steps = read_usize_arg(&args, "--steps").unwrap_or(0);
+        let cards_arg = read_arg(&args, "--manual-step").unwrap_or("pass");
+        let manual_cards = if cards_arg == "pass" {
+            None
+        } else {
+            Some(
+                cards_arg
+                    .split(',')
+                    .map(|s| Card::from_str(s.trim()))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_else(|_| {
+                        eprintln!("invalid card codes: {cards_arg}");
+                        std::process::exit(2);
+                    }),
+            )
+        };
+
+        let report = run_session_manual_step(
+            seed,
+            viewer,
+            steps,
+            manual_cards,
+            max_turns,
+            policy_config,
+            landlord_policy,
+            strategy_config,
+        )
+        .unwrap_or_else(|error| {
+            eprintln!("manual-step seed={seed} viewer={viewer} error={error:?}");
+            std::process::exit(1);
+        });
+
+        if format == "json" {
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        } else {
+            println!(
+                "manual-step seed={} viewer={} current_player={} visible_hand={:?}",
                 report.seed,
                 report.view.viewer,
                 report.view.current_player,
