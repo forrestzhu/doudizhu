@@ -1030,11 +1030,15 @@ pub fn run_session_after_steps_with_landlord_policy(
         LandlordPolicy::RuleBased => Box::new(RuleBasedPolicy::new(rule_config)),
         LandlordPolicy::Strategic => Box::new(StrategicPolicy::from_role_configs(strategy_config)),
     };
-    let mut policies: Vec<Box<dyn DecisionPolicy>> = vec![
-        landlord,
-        Box::new(RuleBasedPolicy::new(rule_config)),
-        Box::new(RuleBasedPolicy::new(rule_config)),
-    ];
+    let farmer1: Box<dyn DecisionPolicy> = match landlord_policy {
+        LandlordPolicy::RuleBased => Box::new(RuleBasedPolicy::new(rule_config)),
+        LandlordPolicy::Strategic => Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+    };
+    let farmer2: Box<dyn DecisionPolicy> = match landlord_policy {
+        LandlordPolicy::RuleBased => Box::new(RuleBasedPolicy::new(rule_config)),
+        LandlordPolicy::Strategic => Box::new(StrategicPolicy::from_role_configs(strategy_config)),
+    };
+    let mut policies: Vec<Box<dyn DecisionPolicy>> = vec![landlord, farmer1, farmer2];
     for _ in 0..steps {
         if game.finished() {
             break;
