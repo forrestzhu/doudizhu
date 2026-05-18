@@ -22,17 +22,30 @@ test.describe('Electron auto-play table', () => {
   let app;
   let page;
 
-  test.beforeEach(async () => {
+  test.beforeAll(async () => {
     app = await electron.launch({
       args: [path.join(projectRoot, 'electron/main.js')],
       cwd: projectRoot,
+      env: { ...process.env, E2E_TEST: '1' },
     });
     page = await app.firstWindow();
     await page.locator('#statusText').getByText('已开局').waitFor();
   });
 
-  test.afterEach(async () => {
+  test.afterAll(async () => {
     await app.close();
+  });
+
+  test.beforeEach(async () => {
+    await page.getByRole('button', { name: '玩家 0' }).click();
+    await expect(page.locator('#viewerText')).toContainText('玩家 0');
+    const meta = await page.locator('#roundMeta').textContent();
+    await page.getByRole('button', { name: '重新发牌' }).click();
+    await page.waitForFunction(
+      (old) => document.querySelector('#roundMeta')?.textContent !== old,
+      meta,
+    );
+    await expect(page.locator('#statusText')).toHaveText('已开局');
   });
 
   test('starts the initial player view through startGame', async () => {

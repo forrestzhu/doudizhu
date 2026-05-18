@@ -9,6 +9,8 @@ let nextGameId = 1;
 let arenaBuildPromise = null;
 
 function createWindow() {
+  const isTest = process.env.E2E_TEST === '1';
+
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -16,6 +18,8 @@ function createWindow() {
     minHeight: 680,
     backgroundColor: '#f5f1e8',
     title: '斗地主',
+    show: !isTest,
+    focusable: !isTest,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
